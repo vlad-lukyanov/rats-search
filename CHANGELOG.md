@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.27](https://github.com/DEgITx/rats-search/compare/v2.0.26...v2.0.27) (2026-06-01)
+
+
+### 🐛 Bug Fixes
+
+
+- **docker:** Correct Qt6 package names for Ubuntu 24.04 ([#275](https://github.com/DEgITx/rats-search/pull/275))([3baa22b](https://github.com/DEgITx/rats-search/commit/3baa22ba6daea8f8fd0e5366c9ae63bc2c0853c2)) by @skyline75489
+
+
+### 📚 Documentation
+
+
+- Update CHANGELOG.md for v2.0.26([453a517](https://github.com/DEgITx/rats-search/commit/453a5173d49d69da4a489ebf2886af64a093a7b6)) by @github-actions[bot]
+
+
+### 🚀 Features
+
+
+- **core:** Upgrade to librats 0.9.1([9009bf9](https://github.com/DEgITx/rats-search/commit/9009bf98c1205a6a9b6e0a35effd6e8f040263fc)) by @DEgITx
+
+
+
+
+### 👥 Contributors
+
+
+
+- [@DEgITx](https://github.com/DEgITx) — 1 commit
+
+
+- [@github-actions[bot]](https://github.com/github-actions[bot]) — 1 commit
+
+
+- [@skyline75489](https://github.com/skyline75489) — 1 commit
+
+
 ## [2.0.26](https://github.com/DEgITx/rats-search/compare/v2.0.25...v2.0.26) (2026-04-26)
 
 
