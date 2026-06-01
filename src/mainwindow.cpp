@@ -126,6 +126,7 @@ MainWindow::MainWindow(int p2pPort, int dhtPort, const QString& dataDirectory, Q
     torrentClient = std::make_unique<TorrentClient>(this);
     p2pNetwork = std::make_unique<P2PNetwork>(config->p2pPort(), config->dhtPort(), dataDirectory_, config->p2pConnections());
     p2pNetwork->setClientVersion(RATSSEARCH_VERSION_STRING);
+    p2pNetwork->setPortMappingEnabled(config->upnpEnabled());
     torrentSpider = std::make_unique<TorrentSpider>(torrentDatabase.get(), p2pNetwork.get());
     api = std::make_unique<RatsAPI>(this);
     updateManager = std::make_unique<UpdateManager>(this);

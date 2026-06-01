@@ -79,6 +79,15 @@ public:
     void stop();
     bool isRunning() const;
     bool isConnected() const;
+
+    /**
+     * @brief Enable/disable automatic NAT port forwarding (UPnP + NAT-PMP).
+     *
+     * Applied to the librats client on start(); if the network is already
+     * running the change takes effect immediately.
+     */
+    void setPortMappingEnabled(bool enabled);
+    bool portMappingEnabled() const { return portMappingEnabled_; }
     
     // =========================================================================
     // Peer Info
@@ -243,6 +252,7 @@ private:
     QString dataDirectory_;
     bool running_;
     bool bitTorrentEnabled_;
+    bool portMappingEnabled_ = true;
     
     // Registered message handlers
     QHash<QString, MessageHandler> messageHandlers_;

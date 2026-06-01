@@ -74,7 +74,11 @@ bool P2PNetwork::start()
         // Improtant to call initialize_encryption after loading configuration
         // Enable encryption for rats peers
         ratsClient_->initialize_encryption(true);
-        
+
+        // Apply automatic NAT port forwarding preference (UPnP + NAT-PMP).
+        // librats starts the backends automatically during start() below.
+        ratsClient_->set_port_mapping_enabled(portMappingEnabled_);
+
         // Setup librats callbacks
         setupLibratsCallbacks();
         
@@ -134,6 +138,15 @@ bool P2PNetwork::start()
         qCritical() << "Exception starting P2P network:" << e.what();
         emit error(QString("Failed to start P2P network: %1").arg(e.what()));
         return false;
+    }
+}
+
+void P2PNetwork::setPortMappingEnabled(bool enabled)
+{
+    portMappingEnabled_ = enabled;
+    // If the client is already running, apply the change live.
+    if (running_ && ratsClient_) {
+        ratsClient_->set_port_mapping_enabled(enabled);
     }
 }
 
