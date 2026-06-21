@@ -104,6 +104,16 @@ public:
      */
     size_t getSpiderVisitedCount() const;
 
+    /**
+     * @brief Get total number of successful metadata fetches
+     */
+    qint64 getFetchSuccessCount() const { return fetchSuccessCount_.load(); }
+
+    /**
+     * @brief Get total number of failed metadata fetches
+     */
+    qint64 getFetchErrorCount() const { return fetchErrorCount_.load(); }
+
 signals:
     void started();
     void stopped();
@@ -157,6 +167,8 @@ private:
     std::atomic<bool> running_;
     std::atomic<int> indexedCount_;
     std::atomic<int> pendingCount_;
+    std::atomic<qint64> fetchSuccessCount_{0};
+    std::atomic<qint64> fetchErrorCount_{0};
     
     // Timers
     QTimer* walkTimer_;
