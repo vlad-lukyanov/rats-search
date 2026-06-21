@@ -1,5 +1,10 @@
 #include "apiserver.h"
 #include "ratsapi.h"
+#include "../p2pnetwork.h"
+#include "../torrentspider.h"
+#include "../torrentdatabase.h"
+#include "../torrentclient.h"
+#include "../manticoremanager.h"
 
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -10,7 +15,10 @@
 #include <QJsonArray>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QDateTime>
 #include <QDebug>
+#include <QDir>
+#include <limits>
 
 // ============================================================================
 // Private Implementation
@@ -25,6 +33,34 @@ public:
     int httpPort_ = 0;
     int wsPort_ = 0;
     bool running_ = false;
+    qint64 startTimeMs = 0;
+    qint64 httpRequestsTotal = 0;
+    qint64 httpRequestsSuccess = 0;
+    qint64 httpRequestsError = 0;
+    qint64 wsMessagesTotal = 0;
+
+    // Per-method request counters
+    QMap<QString, qint64> requestsByMethod;
+    // Per-status code counters
+    QMap<int, qint64> requestsByStatus;
+    // Request duration tracking (requestId -> start timestamp ms)
+    QMap<QString, qint64> requestStartTimes;
+    // Request duration histogram buckets (seconds)
+    // Buckets: 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, +Inf
+    static constexpr int DURATION_BUCKETS_COUNT = 12;
+    static constexpr double DURATION_BUCKETS[DURATION_BUCKETS_COUNT] = {
+        0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, std::numeric_limits<double>::infinity()
+    };
+    qint64 durationBucketCounts[DURATION_BUCKETS_COUNT] = {};
+    double durationSumMs = 0;
+    qint64 durationCount = 0;
+    // Search-specific counters
+    qint64 searchQueriesTotal = 0;
+    qint64 searchDurationSumMs = 0;
+    qint64 searchDurationBuckets[DURATION_BUCKETS_COUNT] = {};
+    // DB index size cache (updated periodically)
+    qint64 dbIndexSizeBytes = 0;
+    qint64 dbIndexSizeLastUpdate = 0;
 };
 
 // ============================================================================
@@ -191,6 +227,26 @@ bool ApiServer::start(int httpPort, int wsPort)
                         return;
                     }
                     
+                    // Health check endpoints (for Kubernetes)
+                    if (req.path == "/healthz") {
+                        socket->write(handleHealthz());
+                        socket->disconnectFromHost();
+                        return;
+                    }
+                    
+                    if (req.path == "/readyz") {
+                        socket->write(handleReadyz());
+                        socket->disconnectFromHost();
+                        return;
+                    }
+                    
+                    // Prometheus metrics endpoint
+                    if (req.path == "/metrics") {
+                        socket->write(handleMetrics());
+                        socket->disconnectFromHost();
+                        return;
+                    }
+                    
                     // Route to API
                     if (req.path.startsWith("/api/")) {
                         QString method = req.path.mid(5);  // Remove /api/
@@ -231,11 +287,52 @@ bool ApiServer::start(int httpPort, int wsPort)
                         
                         QString requestId = QString::number(QDateTime::currentMSecsSinceEpoch(), 16);
                         
-                        d->api->call(method, params, [socket, requestId](const ApiResponse& resp) {
-                            if (!socket->isOpen()) return;
+                        d->httpRequestsTotal++;
+                        d->requestsByMethod[req.method]++;
+                        d->requestStartTimes[requestId] = QDateTime::currentMSecsSinceEpoch();
+                        
+                        d->api->call(method, params, [socket, requestId, method, this](const ApiResponse& resp) {
+                            if (!socket->isOpen()) {
+                                d->requestStartTimes.remove(requestId);
+                                return;
+                            }
+                            
+                            if (resp.success) {
+                                d->httpRequestsSuccess++;
+                            } else {
+                                d->httpRequestsError++;
+                            }
+                            int statusCode = resp.success ? 200 : 400;
+                            d->requestsByStatus[statusCode]++;
+
+                            // Track request duration
+                            qint64 now = QDateTime::currentMSecsSinceEpoch();
+                            auto it = d->requestStartTimes.find(requestId);
+                            if (it != d->requestStartTimes.end()) {
+                                double durationMs = now - it.value();
+                                double durationSec = durationMs / 1000.0;
+                                d->durationSumMs += durationMs;
+                                d->durationCount++;
+                                for (int i = 0; i < Private::DURATION_BUCKETS_COUNT; i++) {
+                                    if (durationSec <= Private::DURATION_BUCKETS[i]) {
+                                        d->durationBucketCounts[i]++;
+                                    }
+                                }
+                                // Track search-specific metrics
+                                if (method.startsWith("search.")) {
+                                    d->searchQueriesTotal++;
+                                    d->searchDurationSumMs += durationMs;
+                                    for (int i = 0; i < Private::DURATION_BUCKETS_COUNT; i++) {
+                                        if (durationSec <= Private::DURATION_BUCKETS[i]) {
+                                            d->searchDurationBuckets[i]++;
+                                        }
+                                    }
+                                }
+                                d->requestStartTimes.remove(requestId);
+                            }
                             
                             QJsonDocument doc(resp.toJson());
-                            socket->write(buildHttpResponse(resp.success ? 200 : 400, 
+                            socket->write(buildHttpResponse(statusCode, 
                                                            resp.success ? "OK" : "Bad Request",
                                                            doc.toJson()));
                             socket->disconnectFromHost();
@@ -245,6 +342,7 @@ bool ApiServer::start(int httpPort, int wsPort)
                     }
                     
                     // 404 for unknown paths
+                    d->requestsByStatus[404]++;
                     socket->write(buildHttpResponse(404, "Not Found", "{\"error\":\"Not Found\"}"));
                     socket->disconnectFromHost();
                 });
@@ -283,6 +381,8 @@ bool ApiServer::start(int httpPort, int wsPort)
                 qInfo() << "WebSocket client connected:" << address;
                 
                 connect(socket, &QWebSocket::textMessageReceived, this, [this, socket](const QString& message) {
+                    d->wsMessagesTotal++;
+                    
                     // Parse JSON-RPC style message
                     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
                     if (!doc.isObject()) {
@@ -328,6 +428,7 @@ bool ApiServer::start(int httpPort, int wsPort)
     }
     
     d->running_ = true;
+    d->startTimeMs = QDateTime::currentMSecsSinceEpoch();
     emit started();
     return true;
 }
@@ -394,5 +495,347 @@ void ApiServer::broadcastEvent(const QString& event, const QJsonValue& data)
             client->sendTextMessage(json);
         }
     }
+}
+
+// ============================================================================
+// Health & Metrics Implementation
+// ============================================================================
+
+QByteArray ApiServer::handleHealthz() const
+{
+    QJsonObject status;
+    status["status"] = "ok";
+    status["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    
+    QJsonDocument doc(status);
+    return buildHttpResponse(200, "OK", doc.toJson(), "application/json");
+}
+
+QByteArray ApiServer::handleReadyz() const
+{
+    QJsonObject status;
+    bool ready = true;
+    
+    // Check if API is initialized and ready
+    if (d->api) {
+        status["api"] = d->api->isReady() ? "ready" : "not_ready";
+        if (!d->api->isReady()) ready = false;
+    } else {
+        status["api"] = "not_initialized";
+        ready = false;
+    }
+    
+    // Check HTTP server
+    status["http"] = d->httpServer && d->httpServer->isListening() ? "listening" : "not_listening";
+    if (!d->httpServer || !d->httpServer->isListening()) ready = false;
+    
+    // Check WebSocket server
+    status["websocket"] = d->wsServer && d->wsServer->isListening() ? "listening" : "not_listening";
+    
+    status["status"] = ready ? "ready" : "not_ready";
+    status["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    
+    QJsonDocument doc(status);
+    int statusCode = ready ? 200 : 503;
+    QString statusText = ready ? "OK" : "Service Unavailable";
+    return buildHttpResponse(statusCode, statusText, doc.toJson(), "application/json");
+}
+
+QByteArray ApiServer::handleMetrics() const
+{
+    QStringList metrics;
+    
+    // Timestamp for all metrics
+    qint64 timestamp = QDateTime::currentMSecsSinceEpoch();
+    
+    // Server uptime
+    qint64 uptimeMs = d->startTimeMs > 0 ? (timestamp - d->startTimeMs) : 0;
+    metrics << "# HELP rats_server_uptime_seconds Server uptime in seconds";
+    metrics << "# TYPE rats_server_uptime_seconds gauge";
+    metrics << QString("rats_server_uptime_seconds %1 %2").arg(uptimeMs / 1000).arg(timestamp);
+
+    // Startup timestamp (for Grafana annotations)
+    if (d->startTimeMs > 0) {
+        qint64 startTimestampMs = d->startTimeMs;
+        metrics << "# HELP rats_start_time_seconds Timestamp when the server started (Unix epoch in milliseconds)";
+        metrics << "# TYPE rats_start_time_seconds gauge";
+        metrics << QString("rats_start_time_seconds %1 %2").arg(startTimestampMs).arg(startTimestampMs);
+    }
+    
+    // WebSocket connections
+    metrics << "# HELP rats_websocket_connections Current number of WebSocket connections";
+    metrics << "# TYPE rats_websocket_connections gauge";
+    metrics << QString("rats_websocket_connections %1 %2").arg(d->wsClients.size()).arg(timestamp);
+    
+    // HTTP server status
+    metrics << "# HELP rats_http_server_running Whether HTTP server is running (1=yes, 0=no)";
+    metrics << "# TYPE rats_http_server_running gauge";
+    metrics << QString("rats_http_server_running %1 %2").arg(d->running_ ? 1 : 0).arg(timestamp);
+    
+    // WebSocket server status
+    metrics << "# HELP rats_ws_server_running Whether WebSocket server is running (1=yes, 0=no)";
+    metrics << "# TYPE rats_ws_server_running gauge";
+    metrics << QString("rats_ws_server_running %1 %2").arg(d->wsServer && d->wsServer->isListening() ? 1 : 0).arg(timestamp);
+    
+    // Port info
+    metrics << "# HELP rats_http_port HTTP server port";
+    metrics << "# TYPE rats_http_port gauge";
+    metrics << QString("rats_http_port %1 %2").arg(d->httpPort_).arg(timestamp);
+    
+    metrics << "# HELP rats_ws_port WebSocket server port";
+    metrics << "# TYPE rats_ws_port gauge";
+    metrics << QString("rats_ws_port %1 %2").arg(d->wsPort_).arg(timestamp);
+    
+    // Request counters
+    metrics << "# HELP rats_http_requests_total Total HTTP requests";
+    metrics << "# TYPE rats_http_requests_total counter";
+    metrics << QString("rats_http_requests_total %1 %2").arg(d->httpRequestsTotal).arg(timestamp);
+    
+    metrics << "# HELP rats_http_requests_success_total Successful HTTP requests";
+    metrics << "# TYPE rats_http_requests_success_total counter";
+    metrics << QString("rats_http_requests_success_total %1 %2").arg(d->httpRequestsSuccess).arg(timestamp);
+    
+    metrics << "# HELP rats_http_requests_error_total Failed HTTP requests";
+    metrics << "# TYPE rats_http_requests_error_total counter";
+    metrics << QString("rats_http_requests_error_total %1 %2").arg(d->httpRequestsError).arg(timestamp);
+    
+    metrics << "# HELP rats_ws_messages_total Total WebSocket messages received";
+    metrics << "# TYPE rats_ws_messages_total counter";
+    metrics << QString("rats_ws_messages_total %1 %2").arg(d->wsMessagesTotal).arg(timestamp);
+    
+    // Application info
+    if (d->api && d->api->isReady()) {
+        metrics << "# HELP rats_info Application info";
+        metrics << "# TYPE rats_info gauge";
+        metrics << QString("rats_info{version=\"2.0.0\"} 1 %1").arg(timestamp);
+    }
+    
+    // =========================================================================
+    // P2P Network Metrics
+    // =========================================================================
+    if (d->api) {
+        P2PNetwork* p2p = d->api->getP2PNetwork();
+        if (p2p) {
+            metrics << "# HELP rats_p2p_peer_count Current number of connected P2P peers";
+            metrics << "# TYPE rats_p2p_peer_count gauge";
+            metrics << QString("rats_p2p_peer_count %1 %2").arg(p2p->getPeerCount()).arg(timestamp);
+            
+            metrics << "# HELP rats_p2p_dht_node_count Number of DHT nodes in routing table";
+            metrics << "# TYPE rats_p2p_dht_node_count gauge";
+            metrics << QString("rats_p2p_dht_node_count %1 %2").arg(p2p->getDhtNodeCount()).arg(timestamp);
+            
+            metrics << "# HELP rats_p2p_dht_running Whether DHT is running (1=yes, 0=no)";
+            metrics << "# TYPE rats_p2p_dht_running gauge";
+            metrics << QString("rats_p2p_dht_running %1 %2").arg(p2p->isDhtRunning() ? 1 : 0).arg(timestamp);
+            
+            metrics << "# HELP rats_p2p_bittorrent_enabled Whether BitTorrent is enabled (1=yes, 0=no)";
+            metrics << "# TYPE rats_p2p_bittorrent_enabled gauge";
+            metrics << QString("rats_p2p_bittorrent_enabled %1 %2").arg(p2p->isBitTorrentEnabled() ? 1 : 0).arg(timestamp);
+            
+            metrics << "# HELP rats_p2p_running Whether P2P network is running (1=yes, 0=no)";
+            metrics << "# TYPE rats_p2p_running gauge";
+            metrics << QString("rats_p2p_running %1 %2").arg(p2p->isRunning() ? 1 : 0).arg(timestamp);
+        }
+    }
+    
+    // =========================================================================
+    // Torrent Database Metrics
+    // =========================================================================
+    if (d->api) {
+        TorrentDatabase* db = d->api->getDatabase();
+        if (db && db->isReady()) {
+            auto stats = db->getStatistics();
+            
+            metrics << "# HELP rats_db_torrents_total Total torrents in database";
+            metrics << "# TYPE rats_db_torrents_total gauge";
+            metrics << QString("rats_db_torrents_total %1 %2").arg(stats.totalTorrents).arg(timestamp);
+            
+            metrics << "# HELP rats_db_files_total Total files in database";
+            metrics << "# TYPE rats_db_files_total gauge";
+            metrics << QString("rats_db_files_total %1 %2").arg(stats.totalFiles).arg(timestamp);
+            
+            metrics << "# HELP rats_db_total_content_size_bytes Total content size of all torrents in bytes (sum of torrent sizes)";
+            metrics << "# TYPE rats_db_total_content_size_bytes gauge";
+            metrics << QString("rats_db_total_content_size_bytes %1 %2").arg(stats.totalSize).arg(timestamp);
+            
+            metrics << "# HELP rats_db_ready Whether database is ready (1=yes, 0=no)";
+            metrics << "# TYPE rats_db_ready gauge";
+            metrics << QString("rats_db_ready 1 %1").arg(timestamp);
+        } else {
+            metrics << "# HELP rats_db_ready Whether database is ready (1=yes, 0=no)";
+            metrics << "# TYPE rats_db_ready gauge";
+            metrics << QString("rats_db_ready 0 %1").arg(timestamp);
+        }
+    }
+    
+    // =========================================================================
+    // Torrent Spider (DHT Crawler) Metrics
+    // =========================================================================
+    if (d->api) {
+        TorrentSpider* spider = d->api->getSpider();
+        if (spider) {
+            metrics << "# HELP rats_spider_running Whether DHT spider is running (1=yes, 0=no)";
+            metrics << "# TYPE rats_spider_running gauge";
+            metrics << QString("rats_spider_running %1 %2").arg(spider->isRunning() ? 1 : 0).arg(timestamp);
+            
+            metrics << "# HELP rats_spider_indexed_total Total torrents indexed by spider";
+            metrics << "# TYPE rats_spider_indexed_total gauge";
+            metrics << QString("rats_spider_indexed_total %1 %2").arg(spider->getIndexedCount()).arg(timestamp);
+            
+            metrics << "# HELP rats_spider_pending_fetches Current pending metadata fetches";
+            metrics << "# TYPE rats_spider_pending_fetches gauge";
+            metrics << QString("rats_spider_pending_fetches %1 %2").arg(spider->getPendingCount()).arg(timestamp);
+            
+            metrics << "# HELP rats_spider_dht_nodes DHT routing table size";
+            metrics << "# TYPE rats_spider_dht_nodes gauge";
+            metrics << QString("rats_spider_dht_nodes %1 %2").arg(spider->getDhtNodeCount()).arg(timestamp);
+            
+            metrics << "# HELP rats_spider_pool_size Spider pool size";
+            metrics << "# TYPE rats_spider_pool_size gauge";
+            metrics << QString("rats_spider_pool_size %1 %2").arg(spider->getSpiderPoolSize()).arg(timestamp);
+            
+            metrics << "# HELP rats_spider_visited_nodes Total visited DHT nodes";
+            metrics << "# TYPE rats_spider_visited_nodes gauge";
+            metrics << QString("rats_spider_visited_nodes %1 %2").arg(spider->getSpiderVisitedCount()).arg(timestamp);
+            
+            metrics << "# HELP rats_spider_fetch_success_total Total successful metadata fetches";
+            metrics << "# TYPE rats_spider_fetch_success_total counter";
+            metrics << QString("rats_spider_fetch_success_total %1 %2").arg(spider->getFetchSuccessCount()).arg(timestamp);
+            
+            metrics << "# HELP rats_spider_fetch_errors_total Total failed metadata fetches";
+            metrics << "# TYPE rats_spider_fetch_errors_total counter";
+            metrics << QString("rats_spider_fetch_errors_total %1 %2").arg(spider->getFetchErrorCount()).arg(timestamp);
+        }
+    }
+    
+    // =========================================================================
+    // Torrent Client (Downloads) Metrics
+    // =========================================================================
+    if (d->api) {
+        TorrentClient* client = d->api->getTorrentClient();
+        if (client && client->isReady()) {
+            auto torrents = client->getAllTorrents();
+            int activeCount = 0;
+            int pausedCount = 0;
+            qint64 totalDownloaded = 0;
+            double totalSpeed = 0.0;
+            
+            for (const auto& t : torrents) {
+                if (!t.completed) {
+                    activeCount++;
+                    if (t.paused) pausedCount++;
+                    totalDownloaded += t.downloadedBytes;
+                    totalSpeed += t.downloadSpeed;
+                }
+            }
+            
+            metrics << "# HELP rats_downloads_active Number of active downloads";
+            metrics << "# TYPE rats_downloads_active gauge";
+            metrics << QString("rats_downloads_active %1 %2").arg(activeCount).arg(timestamp);
+            
+            metrics << "# HELP rats_downloads_paused Number of paused downloads";
+            metrics << "# TYPE rats_downloads_paused gauge";
+            metrics << QString("rats_downloads_paused %1 %2").arg(pausedCount).arg(timestamp);
+            
+            metrics << "# HELP rats_downloads_total_bytes_downloaded Total bytes downloaded across all torrents";
+            metrics << "# TYPE rats_downloads_total_bytes_downloaded counter";
+            metrics << QString("rats_downloads_total_bytes_downloaded %1 %2").arg(totalDownloaded).arg(timestamp);
+            
+            metrics << "# HELP rats_downloads_speed_bytes_per_second Current total download speed in bytes/second";
+            metrics << "# TYPE rats_downloads_speed_bytes_per_second gauge";
+            metrics << QString("rats_downloads_speed_bytes_per_second %1 %2").arg(static_cast<qint64>(totalSpeed)).arg(timestamp);
+            
+            metrics << "# HELP rats_downloads_total Total number of downloads (active + completed)";
+            metrics << "# TYPE rats_downloads_total gauge";
+            metrics << QString("rats_downloads_total %1 %2").arg(torrents.size()).arg(timestamp);
+        }
+    }
+    
+    // =========================================================================
+    // Request Method Breakdown
+    // =========================================================================
+    if (!d->requestsByMethod.isEmpty()) {
+        metrics << "# HELP rats_http_requests_by_method_total Total HTTP requests by method";
+        metrics << "# TYPE rats_http_requests_by_method_total counter";
+        for (auto it = d->requestsByMethod.constBegin(); it != d->requestsByMethod.constEnd(); ++it) {
+            metrics << QString("rats_http_requests_by_method_total{method=\"%1\"} %2 %3").arg(it.key()).arg(it.value()).arg(timestamp);
+        }
+    }
+    
+    // =========================================================================
+    // Request Status Breakdown
+    // =========================================================================
+    if (!d->requestsByStatus.isEmpty()) {
+        metrics << "# HELP rats_http_requests_by_status_total Total HTTP requests by status code";
+        metrics << "# TYPE rats_http_requests_by_status_total counter";
+        for (auto it = d->requestsByStatus.constBegin(); it != d->requestsByStatus.constEnd(); ++it) {
+            metrics << QString("rats_http_requests_by_status_total{status=\"%1\"} %2 %3").arg(it.key()).arg(it.value()).arg(timestamp);
+        }
+    }
+    
+    // =========================================================================
+    // Request Duration Histogram
+    // =========================================================================
+    if (d->durationCount > 0) {
+        metrics << "# HELP rats_http_request_duration_seconds HTTP request duration in seconds";
+        metrics << "# TYPE rats_http_request_duration_seconds histogram";
+        qint64 cumulative = 0;
+        for (int i = 0; i < Private::DURATION_BUCKETS_COUNT; i++) {
+            cumulative += d->durationBucketCounts[i];
+            QString le = (i == Private::DURATION_BUCKETS_COUNT - 1) ? "+Inf" 
+                        : QString::number(Private::DURATION_BUCKETS[i], 'g', 4);
+            metrics << QString("rats_http_request_duration_seconds_bucket{le=\"%1\"} %2 %3").arg(le).arg(cumulative).arg(timestamp);
+        }
+        metrics << QString("rats_http_request_duration_seconds_sum %1 %2").arg(d->durationSumMs / 1000.0, 0, 'f', 6).arg(timestamp);
+        metrics << QString("rats_http_request_duration_seconds_count %1 %2").arg(d->durationCount).arg(timestamp);
+    }
+    
+    // =========================================================================
+    // Search Metrics
+    // =========================================================================
+    if (d->searchQueriesTotal > 0) {
+        metrics << "# HELP rats_search_queries_total Total search queries executed";
+        metrics << "# TYPE rats_search_queries_total counter";
+        metrics << QString("rats_search_queries_total %1 %2").arg(d->searchQueriesTotal).arg(timestamp);
+        
+        metrics << "# HELP rats_search_duration_seconds Search query duration in seconds";
+        metrics << "# TYPE rats_search_duration_seconds histogram";
+        qint64 cumulative = 0;
+        for (int i = 0; i < Private::DURATION_BUCKETS_COUNT; i++) {
+            cumulative += d->searchDurationBuckets[i];
+            QString le = (i == Private::DURATION_BUCKETS_COUNT - 1) ? "+Inf" 
+                        : QString::number(Private::DURATION_BUCKETS[i], 'g', 4);
+            metrics << QString("rats_search_duration_seconds_bucket{le=\"%1\"} %2 %3").arg(le).arg(cumulative).arg(timestamp);
+        }
+        metrics << QString("rats_search_duration_seconds_sum %1 %2").arg(d->searchDurationSumMs / 1000.0, 0, 'f', 6).arg(timestamp);
+        metrics << QString("rats_search_duration_seconds_count %1 %2").arg(d->searchQueriesTotal).arg(timestamp);
+    }
+    
+    // =========================================================================
+    // Database Index Size
+    // =========================================================================
+    if (d->api && d->api->isReady()) {
+        // Update index size every 60 seconds
+        if (timestamp - d->dbIndexSizeLastUpdate > 60000) {
+            TorrentDatabase* db = d->api->getDatabase();
+            if (db && db->manager()) {
+                QDir dbDir(db->manager()->databasePath());
+                if (dbDir.exists()) {
+                    qint64 totalSize = 0;
+                    for (const auto& entry : dbDir.entryInfoList(QDir::Files)) {
+                        totalSize += entry.size();
+                    }
+                    d->dbIndexSizeBytes = totalSize;
+                }
+                d->dbIndexSizeLastUpdate = timestamp;
+            }
+        }
+        metrics << "# HELP rats_db_index_size_bytes Total size of database index files on disk";
+        metrics << "# TYPE rats_db_index_size_bytes gauge";
+        metrics << QString("rats_db_index_size_bytes %1 %2").arg(d->dbIndexSizeBytes).arg(timestamp);
+    }
+    
+    QString body = metrics.join("\n") + "\n";
+    return buildHttpResponse(200, "OK", body.toUtf8(), "text/plain; version=0.0.4; charset=utf-8");
 }
 

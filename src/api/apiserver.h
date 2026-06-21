@@ -7,6 +7,10 @@
 #include <memory>
 
 class RatsAPI;
+class P2PNetwork;
+class TorrentSpider;
+class TorrentDatabase;
+class TorrentClient;
 
 /**
  * @brief ApiServer - HTTP REST + WebSocket server for RatsAPI
@@ -76,6 +80,29 @@ public:
      * @brief Broadcast event to all WebSocket clients
      */
     void broadcastEvent(const QString& event, const QJsonValue& data);
+    
+    // =========================================================================
+    // Health & Metrics (for Kubernetes probes and Prometheus)
+    // =========================================================================
+    
+    /**
+     * @brief Liveness probe - returns 200 if server is running
+     * Use for kubernetes livenessProbe
+     */
+    QByteArray handleHealthz() const;
+    
+    /**
+     * @brief Readiness probe - returns 200 if API is ready to serve requests
+     * Checks: API initialized, database ready, P2P running
+     * Use for kubernetes readinessProbe
+     */
+    QByteArray handleReadyz() const;
+    
+    /**
+     * @brief Prometheus metrics endpoint
+     * Returns metrics in Prometheus text exposition format
+     */
+    QByteArray handleMetrics() const;
 
 signals:
     void started();
