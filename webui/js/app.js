@@ -46,7 +46,7 @@ const app = createApp({
 
         async loadStats() {
             try {
-                const response = await fetch('/api/statistics');
+                const response = await fetch('/api/stats.database');
                 const data = await response.json();
                 
                 if (data.success && data.data) {
@@ -59,12 +59,12 @@ const app = createApp({
 
         async loadP2PStatus() {
             try {
-                const response = await fetch('/api/p2p.status');
+                const response = await fetch('/api/stats.p2pStatus');
                 const data = await response.json();
                 
                 if (data.success && data.data) {
                     this.p2pStatus = {
-                        connectedPeers: data.data.connectedPeers || 0,
+                        connectedPeers: data.data.peerCount || 0,
                         dhtNodes: data.data.dhtNodes || 0
                     };
                 }
@@ -78,7 +78,7 @@ const app = createApp({
             this.torrentFiles = [];
             
             try {
-                const response = await fetch(`/api/torrent?hash=${torrent.hash}&includeFiles=true`);
+                const response = await fetch(`/api/search.torrent?hash=${torrent.hash}&includeFiles=true`);
                 const data = await response.json();
                 
                 if (data.success && data.data) {
