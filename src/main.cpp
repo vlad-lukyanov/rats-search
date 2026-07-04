@@ -150,7 +150,7 @@ void signalHandler(int signum)
 }
 
 // Console mode main loop - uses the existing QCoreApplication from main()
-int runConsoleMode(QCoreApplication& app, int p2pPort, int dhtPort, const QString& dataDir, bool enableSpider, int maxPeers)
+int runConsoleMode(QCoreApplication& app, int p2pPort, int dhtPort, const QString& dataDir, bool enableSpider, int maxPeers, const QString& webuiDir)
 {
     g_app = &app;
     
@@ -161,6 +161,7 @@ int runConsoleMode(QCoreApplication& app, int p2pPort, int dhtPort, const QStrin
     // Create configuration manager first to get default ports
     ConfigManager config(dataDir + "/rats.json");
     config.load();
+    config.setWebuiDir(webuiDir);
     
     // Apply CLI overrides or use config defaults
     int actualP2pPort = (p2pPort > 0) ? p2pPort : config.p2pPort();
@@ -465,6 +466,10 @@ int main(int argc, char *argv[])
             "Maximum P2P connections (overrides config setting, range: 10-1000)", "max-peers");
         parser.addOption(maxPeersOption);
         
+        QCommandLineOption webuiDirOption(QStringList() << "w" << "webui-dir",
+            "Directory for web UI files", "path");
+        parser.addOption(webuiDirOption);
+        
         parser.process(app);
         
         // Get command line options (0 means not specified - use config default)
@@ -516,7 +521,14 @@ int main(int argc, char *argv[])
         // Log system and data directory info for debugging
         logStartupInfo(dataDir);
         
-        return runConsoleMode(app, p2pPort, dhtPort, dataDir, enableSpider, maxPeers);
+        QString webuiDir;
+        if (parser.isSet(webuiDirOption)) {
+            webuiDir = parser.value(webuiDirOption);
+        } else {
+            webuiDir = dataDir + "/webui";
+        }
+        
+        return runConsoleMode(app, p2pPort, dhtPort, dataDir, enableSpider, maxPeers, webuiDir);
     }
     else {
         // GUI mode
@@ -548,6 +560,10 @@ int main(int argc, char *argv[])
         QCommandLineOption dataDirectoryOption(QStringList() << "data-dir",
             "Data directory for database and config", "path");
         parser.addOption(dataDirectoryOption);
+        
+        QCommandLineOption webuiDirOption(QStringList() << "w" << "webui-dir",
+            "Directory for web UI files", "path");
+        parser.addOption(webuiDirOption);
         
         parser.process(app);
         
@@ -625,6 +641,14 @@ int main(int argc, char *argv[])
                 qInfo() << "Autostart re-synced with OS";
             }
         }
+        
+        QString webuiDir;
+        if (parser.isSet(webuiDirOption)) {
+            webuiDir = parser.value(webuiDirOption);
+        } else {
+            webuiDir = dataDir + "/webui";
+        }
+        tempConfig.setWebuiDir(webuiDir);
         
         // Create main window (UI setup only, services deferred)
         qint64 windowStart = startupTimer.elapsed();
