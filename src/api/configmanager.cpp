@@ -475,6 +475,11 @@ void ConfigManager::setAgreementAccepted(bool accepted) {
     }
 }
 
+QString ConfigManager::webuiDir() const { return config_["webuiDir"].toString(); }
+void ConfigManager::setWebuiDir(const QString& dir) { 
+    if (setValue("webuiDir", dir)) emit webuiDirChanged(dir);
+}
+
 // ============================================================================
 // Generic Access
 // ============================================================================

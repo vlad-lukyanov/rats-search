@@ -213,6 +213,9 @@ public:
     bool agreementAccepted() const;
     void setAgreementAccepted(bool accepted);
     
+    QString webuiDir() const;
+    void setWebuiDir(const QString& dir);
+    
     // =========================================================================
     // Generic Access (for API)
     // =========================================================================
@@ -261,6 +264,7 @@ signals:
     void checkUpdatesOnStartupChanged(bool enabled);
     void dataDirectoryChanged(const QString& path);
     void agreementAcceptedChanged(bool accepted);
+    void webuiDirChanged(const QString& dir);
     
     // Filter signals
     void filtersMaxFilesChanged(int max);
