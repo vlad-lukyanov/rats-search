@@ -61,6 +61,9 @@ COPY imports/linux/x64/searchd  /app/
 COPY imports/linux/x64/indexer  /app/
 COPY imports/linux/x64/indextool /app/
 
+# Copy web UI files
+COPY webui/ /app/webui/
+
 RUN chmod +x /app/RatsSearch /app/searchd /app/indexer /app/indextool
 
 # Persistent data directory for database, config, and logs
@@ -74,4 +77,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8095/healthz || exit 1
 
 # Run in console mode with spider enabled and 30 max peers
-CMD ["/app/RatsSearch", "--console", "--spider", "--max-peers", "30", "--data-dir", "/data"]
+CMD ["/app/RatsSearch", "--console", "--spider", "--max-peers", "30", "--data-dir", "/data", "--webui-dir", "/app/webui"]

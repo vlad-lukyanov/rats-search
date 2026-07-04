@@ -436,6 +436,13 @@ public:
      */
     void getFeed(int index, int limit, ApiCallback callback);
     
+    /**
+     * @brief Export torrent as .torrent file
+     * @param hash Torrent info hash
+     * @param callback Called with file path on success
+     */
+    void exportTorrentFile(const QString& hash, ApiCallback callback);
+    
     // =========================================================================
     // P2P Replication API (like legacy api.js:247-272)
     // =========================================================================

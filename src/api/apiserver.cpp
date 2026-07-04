@@ -266,6 +266,44 @@ bool ApiServer::start(int httpPort, int wsPort)
                         return;
                     }
                     
+                    // Serve .torrent download files
+                    if (req.path.startsWith("/download/")) {
+                        QString filePath = req.path.mid(10);  // Remove /download/
+                        QString fullPath = QDir::currentPath() + "/torrents/" + filePath;
+                        
+                        // Security: prevent directory traversal
+                        QString cleanPath = QDir::cleanPath(fullPath);
+                        QString cleanBase = QDir::cleanPath(QDir::currentPath() + "/torrents");
+                        if (!cleanPath.startsWith(cleanBase + "/")) {
+                            socket->write(buildHttpResponse(403, "Forbidden", "{\"error\":\"Access denied\"}"));
+                            socket->disconnectFromHost();
+                            return;
+                        }
+                        
+                        QFile file(fullPath);
+                        if (file.exists() && file.open(QIODevice::ReadOnly)) {
+                            QByteArray content = file.readAll();
+                            file.close();
+                            
+                            // Set content disposition for download
+                            QByteArray response;
+                            response.append("HTTP/1.1 200 OK\r\n");
+                            response.append("Content-Type: application/x-bittorrent\r\n");
+                            response.append("Content-Disposition: attachment; filename=\"" + filePath.toUtf8() + "\"\r\n");
+                            response.append("Content-Length: " + QByteArray::number(content.size()) + "\r\n");
+                            response.append("Access-Control-Allow-Origin: *\r\n");
+                            response.append("Connection: close\r\n");
+                            response.append("\r\n");
+                            response.append(content);
+                            
+                            socket->write(response);
+                        } else {
+                            socket->write(buildHttpResponse(404, "Not Found", "{\"error\":\"File not found\"}"));
+                        }
+                        socket->disconnectFromHost();
+                        return;
+                    }
+                    
                     // Route to API
                     if (req.path.startsWith("/api/")) {
                         QString method = req.path.mid(5);  // Remove /api/
@@ -882,8 +920,8 @@ QByteArray ApiServer::handleStaticFile(const QString& path) const
     }
     
     // Security: prevent directory traversal
-    QString cleanPath = QDir(filePath).cleanPath();
-    QString cleanWebuiDir = QDir(webuiDir).cleanPath();
+    QString cleanPath = QDir::cleanPath(filePath);
+    QString cleanWebuiDir = QDir::cleanPath(webuiDir);
     if (!cleanPath.startsWith(cleanWebuiDir + "/") && cleanPath != cleanWebuiDir) {
         return buildHttpResponse(403, "Forbidden", "{\"error\":\"Access denied\"}");
     }

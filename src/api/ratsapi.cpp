@@ -614,6 +614,11 @@ void RatsAPI::registerMethods()
     methods_["feed.get"] = [this](const QJsonObject& params, ApiCallback cb) {
         getFeed(params["index"].toInt(0), params["limit"].toInt(20), cb);
     };
+    
+    // Export
+    methods_["torrent.export"] = [this](const QJsonObject& params, ApiCallback cb) {
+        exportTorrentFile(params["hash"].toString(), cb);
+    };
 }
 
 void RatsAPI::call(const QString& method,
@@ -2006,6 +2011,38 @@ void RatsAPI::getFeed(int index, int limit, ApiCallback callback)
     
     QJsonArray feed = d->feedManager->toJsonArray(index, limit);
     if (callback) callback(ApiResponse::ok(feed));
+}
+
+void RatsAPI::exportTorrentFile(const QString& hash, ApiCallback callback)
+{
+    if (hash.length() != 40) {
+        if (callback) callback(ApiResponse::fail("Invalid hash"));
+        return;
+    }
+    
+    if (!d->database) {
+        if (callback) callback(ApiResponse::fail("Database not initialized"));
+        return;
+    }
+    
+    TorrentInfo torrent = d->database->getTorrent(hash, false);
+    if (!torrent.isValid()) {
+        if (callback) callback(ApiResponse::fail("Torrent not found"));
+        return;
+    }
+    
+    // Check if .torrent file exists in cache
+    QString cachePath = QDir(d->config->dataDirectory()).absoluteFilePath("torrents/" + hash.toLower() + ".torrent");
+    if (QFile::exists(cachePath)) {
+        QJsonObject result;
+        result["path"] = cachePath;
+        result["name"] = torrent.name.isEmpty() ? hash : torrent.name;
+        if (callback) callback(ApiResponse::ok(result));
+        return;
+    }
+    
+    // Export not available - file not in cache
+    if (callback) callback(ApiResponse::fail("Torrent file not available in cache. Use magnet link instead."));
 }
 
 // ============================================================================
