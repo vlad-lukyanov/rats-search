@@ -69,14 +69,12 @@ COPY webui/ /app/webui/
 
 RUN chmod +x /app/RatsSearch /app/searchd /app/indexer /app/indextool
 
+# Copy and set up entrypoint (runs as root to fix /data permissions)
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
 # Persistent data directory for database, config, and logs
 VOLUME /data
-
-# Ensure data directory is owned by rats user
-RUN mkdir -p /data && chown rats:rats /data
-
-# Switch to non-root user
-USER rats
 
 # Default HTTP API port
 EXPOSE 8095
@@ -84,6 +82,12 @@ EXPOSE 8095
 # Health check for Kubernetes
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8095/healthz || exit 1
+
+# Entrypoint runs as root to fix /data ownership, then switches to rats user
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+
+# Switch to non-root user
+USER rats
 
 # Run in console mode with spider enabled and 30 max peers
 CMD ["/app/RatsSearch", "--console", "--spider", "--max-peers", "30", "--data-dir", "/data", "--webui-dir", "/app/webui"]
