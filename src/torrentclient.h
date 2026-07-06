@@ -15,13 +15,10 @@
 class P2PNetwork;
 class TorrentDatabase;
 
-namespace librats {
-    class BtClient;
-    class Torrent; // Forward declare Torrent (TorrentDownload is an alias for this)
+namespace librats::bittorrent {
+    class Client;
+    struct TorrentStatus;
 }
-
-// TorrentDownload is an alias for Torrent, defined in bittorrent.h
-// For the header, we use Torrent directly; the alias is available in the .cpp
 
 /**
  * @brief TorrentFileInfo - Information about a file in a torrent
@@ -53,16 +50,22 @@ struct ActiveTorrent {
     bool ready = false;           // Metadata received
     bool completed = false;
     QVector<TorrentFileInfo> files;
-    
-    // librats torrent reference
-    std::shared_ptr<librats::Torrent> download;
-    
+
+    // True once the torrent has been handed to librats (add_* returned). Distinct
+    // from `ready`, which means metadata (name/files/size) is known.
+    bool added = false;
+
+    // Rolling sample used to derive downloadSpeed from the byte counter delta
+    // between polls (librats exposes cumulative bytes, not a per-torrent rate).
+    qint64 lastSampledBytes = 0;
+    qint64 lastSampledMs = 0;
+
     QJsonObject toJson() const;
     QJsonObject toProgressJson() const;
 };
 
 /**
- * @brief TorrentClient - Torrent download client using librats::BitTorrentClient
+ * @brief TorrentClient - Torrent download client using librats::bittorrent::Client
  * 
  * This class provides torrent downloading functionality by integrating with
  * librats BitTorrent implementation. It handles:
@@ -367,10 +370,14 @@ private slots:
 private:
     QString parseInfoHash(const QString& magnetLink) const;
     /// The BitTorrent client from P2PNetwork's Bittorrent subsystem (null if down).
-    librats::BtClient* btClient() const;
-    void setupTorrentCallbacks(const QString& hash, std::shared_ptr<librats::Torrent> download);
+    librats::bittorrent::Client* btClient() const;
     void updateTorrentStatus(const QString& hash);
     void emitProgressJson(const QString& hash, const ActiveTorrent& torrent);
+#ifdef RATS_SEARCH_FEATURES
+    /// Copy metadata (name/size/files/progress) from a librats status snapshot into
+    /// an ActiveTorrent, marking it ready.
+    void applyStatusToTorrent(ActiveTorrent& torrent, const librats::bittorrent::TorrentStatus& status);
+#endif
 
     P2PNetwork* p2pNetwork_ = nullptr;
     TorrentDatabase* database_ = nullptr;
