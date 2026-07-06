@@ -1701,7 +1701,19 @@ void RatsAPI::createTorrent(const QString& path,
     
     QString hash;
     QString torrentFilePath;  // Path where .torrent file is saved
-    
+
+    // Sanitize a torrent name into a safe .torrent filename (shared by both paths).
+    auto sanitizeFileName = [](QString name) {
+        name.replace(QRegularExpression("[<>:\"/\\\\|?*]"), "_");
+        if (name.length() > 200) {
+            name = name.left(200);
+        }
+        return name;
+    };
+
+    // Holds the librats-created info in the non-seeding path so we don't hash twice.
+    std::optional<bt::TorrentInfo> createdInfo;
+
     if (startSeeding && d->torrentClient && d->torrentClient->isReady()) {
         // Create and start seeding using TorrentClient
         TorrentClient::CreationProgressCallback tcCallback = nullptr;
@@ -1710,41 +1722,39 @@ void RatsAPI::createTorrent(const QString& path,
                 progressCallback(current, total);
             };
         }
-        
-        hash = d->torrentClient->createAndSeedTorrent(path, trackers, comment, tcCallback);
-        
+
+        // The torrent name equals the source basename, so we can derive the .torrent
+        // path up front and let createAndSeedTorrent write it from the same hashing
+        // pass (no second full hash).
+        QString baseName = sanitizeFileName(QFileInfo(path).fileName());
+        QString candidatePath = baseName.isEmpty()
+            ? QString()
+            : torrentsDir + "/" + baseName + ".torrent";
+
+        hash = d->torrentClient->createAndSeedTorrent(path, trackers, comment,
+                                                      candidatePath, tcCallback);
+
         if (hash.isEmpty()) {
             if (callback) callback(ApiResponse::fail("Failed to create torrent"));
             return;
         }
-        
-        // Also save .torrent file to torrents directory
-        // Get the torrent name for the filename
-        ActiveTorrent active = d->torrentClient->getTorrent(hash);
-        QString torrentName = active.name.isEmpty() ? hash : active.name;
-        
-        // Sanitize filename (remove invalid characters)
-        torrentName.replace(QRegularExpression("[<>:\"/\\\\|?*]"), "_");
-        if (torrentName.length() > 200) {
-            torrentName = torrentName.left(200);
-        }
-        
-        torrentFilePath = torrentsDir + "/" + torrentName + ".torrent";
-        
-        // Use TorrentClient to create the .torrent file
-        bool fileSaved = d->torrentClient->createTorrentFile(
-            path, torrentFilePath, trackers, comment, nullptr);
-        
-        if (!fileSaved) {
-            qWarning() << "Failed to save .torrent file to:" << torrentFilePath;
-            torrentFilePath.clear();  // Clear path since save failed
-        } else {
+
+        if (!candidatePath.isEmpty() && QFile::exists(candidatePath)) {
+            torrentFilePath = candidatePath;
             qInfo() << "Saved .torrent file to:" << torrentFilePath;
+        } else {
+            // Degenerate (empty basename) or write failed: fall back to a hash-named
+            // file. This re-hashes, but only in this uncommon case.
+            QString fallback = torrentsDir + "/" + hash + ".torrent";
+            if (d->torrentClient->createTorrentFile(path, fallback, trackers, comment, nullptr)) {
+                torrentFilePath = fallback;
+                qInfo() << "Saved .torrent file to:" << torrentFilePath;
+            } else {
+                qWarning() << "Failed to save .torrent file for:" << hash.left(8);
+            }
         }
     } else {
         // Just create the torrent info without seeding — use librats directly.
-        // The new TorrentCreator hashes synchronously in create_from_path (no
-        // per-piece progress callback), so progressCallback is not used here.
         bt::TorrentCreator creator;
         creator.set_comment(comment.toStdString());
         creator.set_created_by("Rats Search");
@@ -1752,26 +1762,29 @@ void RatsAPI::createTorrent(const QString& path,
             creator.add_tracker(tracker.toStdString());
         }
 
+        // Drive the progress bar while pieces are hashed.
+        bt::PieceHashProgress onProgress;
+        if (progressCallback) {
+            onProgress = [progressCallback](std::uint32_t done, std::uint32_t total) {
+                progressCallback(static_cast<int>(done), static_cast<int>(total));
+            };
+        }
+
         std::string error;
-        auto torrentInfoOpt = creator.create_from_path(path.toStdString(), &error);
-        if (!torrentInfoOpt) {
+        createdInfo = creator.create_from_path(path.toStdString(), &error, onProgress);
+        if (!createdInfo) {
             if (callback) callback(ApiResponse::fail("Failed to generate torrent: " + QString::fromStdString(error)));
             return;
         }
 
-        hash = QString::fromStdString(torrentInfoOpt->info_hash_hex()).toLower();
+        hash = QString::fromStdString(createdInfo->info_hash_hex()).toLower();
 
         // Save .torrent file to torrents directory
-        QString torrentName = QString::fromStdString(torrentInfoOpt->name());
+        QString torrentName = QString::fromStdString(createdInfo->name());
         if (torrentName.isEmpty()) {
             torrentName = hash;
         }
-
-        // Sanitize filename
-        torrentName.replace(QRegularExpression("[<>:\"/\\\\|?*]"), "_");
-        if (torrentName.length() > 200) {
-            torrentName = torrentName.left(200);
-        }
+        torrentName = sanitizeFileName(torrentName);
 
         torrentFilePath = torrentsDir + "/" + torrentName + ".torrent";
 
@@ -1808,21 +1821,15 @@ void RatsAPI::createTorrent(const QString& path,
             torrent.filesList.append(tf);
         }
     } else {
-        // Recreate TorrentInfo from librats (we don't have it from above due to scope)
-        bt::TorrentCreator creator;
-        creator.set_comment(comment.toStdString());
-        creator.set_created_by("Rats Search");
+        // Reuse the TorrentInfo already produced by the non-seeding branch above
+        // instead of re-hashing the whole payload a second time.
+        if (createdInfo) {
+            torrent.name = QString::fromStdString(createdInfo->name());
+            torrent.size = static_cast<qint64>(createdInfo->total_size());
+            torrent.files = static_cast<int>(createdInfo->num_files());
+            torrent.piecelength = static_cast<int>(createdInfo->piece_length());
 
-        std::string error;
-        auto torrentInfoOpt = creator.create_from_path(path.toStdString(), &error);
-
-        if (torrentInfoOpt) {
-            torrent.name = QString::fromStdString(torrentInfoOpt->name());
-            torrent.size = static_cast<qint64>(torrentInfoOpt->total_size());
-            torrent.files = static_cast<int>(torrentInfoOpt->num_files());
-            torrent.piecelength = static_cast<int>(torrentInfoOpt->piece_length());
-            
-            const auto& files = torrentInfoOpt->files().files();
+            const auto& files = createdInfo->files().files();
             for (const auto& f : files) {
                 TorrentFile tf;
                 tf.path = QString::fromStdString(f.path);

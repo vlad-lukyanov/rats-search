@@ -45,6 +45,33 @@ std::optional<bt::InfoHash> toInfoHash(const QString& hex)
 {
     return bt::info_hash_from_hex(hex.toStdString());
 }
+
+// Adapt our (int, int) creation-progress callback to librats' piece-hash callback,
+// so the UI progress bar is driven while create_from_path hashes each piece.
+bt::PieceHashProgress toPieceHashProgress(const TorrentClient::CreationProgressCallback& cb)
+{
+    if (!cb) {
+        return {};
+    }
+    return [cb](std::uint32_t done, std::uint32_t total) {
+        cb(static_cast<int>(done), static_cast<int>(total));
+    };
+}
+
+// Write the .torrent bytes a creator already produced (from create_from_path) to
+// disk. No hashing happens here — the pieces are reused.
+bool writeTorrentFile(const bt::TorrentCreator& creator, const QString& outputFile)
+{
+    const auto& bytes = creator.torrent_file();
+    QFile out(outputFile);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "TorrentClient: Failed to open output file:" << outputFile;
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<qint64>(bytes.size()));
+    out.close();
+    return true;
+}
 } // namespace
 #endif
 
@@ -1142,11 +1169,10 @@ QString TorrentClient::parseInfoHash(const QString& magnetLink) const
 QString TorrentClient::createAndSeedTorrent(const QString& path,
                                              const QStringList& trackers,
                                              const QString& comment,
+                                             const QString& saveTorrentFilePath,
                                              CreationProgressCallback progressCallback)
 {
 #ifdef RATS_SEARCH_FEATURES
-    Q_UNUSED(progressCallback);  // new TorrentCreator hashes synchronously without progress
-
     if (!isReady()) {
         qWarning() << "TorrentClient: Not ready for torrent creation";
         return QString();
@@ -1170,7 +1196,8 @@ QString TorrentClient::createAndSeedTorrent(const QString& path,
     }
 
     std::string createError;
-    auto infoOpt = creator.create_from_path(path.toStdString(), &createError);
+    auto infoOpt = creator.create_from_path(path.toStdString(), &createError,
+                                            toPieceHashProgress(progressCallback));
     if (!infoOpt) {
         qWarning() << "TorrentClient: Failed to create torrent from:" << path
                    << QString::fromStdString(createError);
@@ -1184,6 +1211,11 @@ QString TorrentClient::createAndSeedTorrent(const QString& path,
     if (!download) {
         qWarning() << "TorrentClient: Failed to start seeding torrent from:" << path;
         return QString();
+    }
+
+    // Reuse the just-hashed pieces to write the .torrent file (avoids re-hashing).
+    if (!saveTorrentFilePath.isEmpty()) {
+        writeTorrentFile(creator, saveTorrentFilePath);
     }
 
     QString hash = QString::fromStdString(info.info_hash_hex()).toLower();
@@ -1243,6 +1275,7 @@ QString TorrentClient::createAndSeedTorrent(const QString& path,
     Q_UNUSED(path);
     Q_UNUSED(trackers);
     Q_UNUSED(comment);
+    Q_UNUSED(saveTorrentFilePath);
     Q_UNUSED(progressCallback);
     qWarning() << "TorrentClient: RATS_SEARCH_FEATURES not enabled";
     return QString();
@@ -1256,8 +1289,6 @@ bool TorrentClient::createTorrentFile(const QString& path,
                                        CreationProgressCallback progressCallback)
 {
 #ifdef RATS_SEARCH_FEATURES
-    Q_UNUSED(progressCallback);  // new TorrentCreator hashes synchronously without progress
-
     if (!isReady()) {
         qWarning() << "TorrentClient: Not ready for torrent creation";
         return false;
@@ -1274,21 +1305,16 @@ bool TorrentClient::createTorrentFile(const QString& path,
     }
 
     std::string createError;
-    auto infoOpt = creator.create_from_path(path.toStdString(), &createError);
+    auto infoOpt = creator.create_from_path(path.toStdString(), &createError,
+                                            toPieceHashProgress(progressCallback));
     if (!infoOpt) {
         qWarning() << "TorrentClient: create_from_path error:" << QString::fromStdString(createError);
         return false;
     }
 
-    // Write the bencoded .torrent bytes to disk.
-    const auto& bytes = creator.torrent_file();
-    QFile out(outputFile);
-    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        qWarning() << "TorrentClient: Failed to open output file:" << outputFile;
+    if (!writeTorrentFile(creator, outputFile)) {
         return false;
     }
-    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<qint64>(bytes.size()));
-    out.close();
 
     qInfo() << "TorrentClient: Torrent file created:" << outputFile;
     return true;

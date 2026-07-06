@@ -279,12 +279,15 @@ public:
      * @param path Path to file or directory
      * @param trackers List of tracker URLs (optional)
      * @param comment Torrent comment (optional)
+     * @param saveTorrentFilePath If non-empty, write the .torrent to this path,
+     *        reusing the pieces hashed for seeding (avoids a second full hash)
      * @param progressCallback Callback for progress updates (optional)
      * @return Info hash of created torrent, or empty string on failure
      */
     QString createAndSeedTorrent(const QString& path,
                                   const QStringList& trackers = QStringList(),
                                   const QString& comment = QString(),
+                                  const QString& saveTorrentFilePath = QString(),
                                   CreationProgressCallback progressCallback = nullptr);
 
     /**
