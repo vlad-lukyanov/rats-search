@@ -484,6 +484,14 @@
                                     <div class="setting-hint">{{ t('settings.downloadHint') }}</div>
                                 </div>
                                 <div class="setting-group">
+                                    <h3>{{ t('settings.dataDir') }}</h3>
+                                    <div class="setting-row">
+                                        <label>{{ t('settings.dataDirPath') }}</label>
+                                        <input type="text" :value="config.dataDirectory" readonly style="opacity:0.7;cursor:not-allowed">
+                                    </div>
+                                    <div class="setting-hint">{{ t('settings.dataDirHint') }}</div>
+                                </div>
+                                <div class="setting-group">
                                     <h3>{{ t('settings.cleanupGroup') }}</h3>
                                     <div class="setting-row">
                                         <label>
@@ -495,6 +503,11 @@
                                             <input type="checkbox" v-model="config.recheckFilesOnAdding"> {{ t('settings.recheckFiles') }}
                                         </label>
                                     </div>
+                                    <div class="setting-row" style="gap:8px;flex-wrap:wrap">
+                                        <button class="save-btn" style="background:#1e94e3;padding:6px 14px;font-size:13px" @click="checkTorrents">{{ t('settings.checkTorrents') }}</button>
+                                        <button class="save-btn" style="background:#e94560;padding:6px 14px;font-size:13px" @click="cleanTorrents">{{ t('settings.cleanTorrents') }}</button>
+                                    </div>
+                                    <div class="setting-hint" v-if="cleanupStatus">{{ cleanupStatus }}</div>
                                 </div>
                                 <div class="setting-group">
                                     <h3>{{ t('settings.spaceQuota') }}</h3>

@@ -32,7 +32,8 @@ const app = createApp({
             sortKey: '',
             sortDir: 1,
             sortSource: '',
-            settingsTab: 'general'
+            settingsTab: 'general',
+            cleanupStatus: ''
         };
     },
 
@@ -163,7 +164,7 @@ const app = createApp({
 
         async loadStats() {
             try {
-                const response = await fetch('/api/stats.database');
+                const response = await fetch('/api/stats.get');
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -218,7 +219,7 @@ const app = createApp({
 
         async loadDownloads() {
             try {
-                const response = await fetch('/api/downloads.list');
+                const response = await fetch('/api/download.list');
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -311,6 +312,40 @@ const app = createApp({
             }
         },
 
+        async checkTorrents() {
+            this.cleanupStatus = this.t('settings.checkingTorrents') || 'Checking...';
+            try {
+                const resp = await fetch('/api/torrent.cleanup?dryRun=true');
+                const data = await resp.json();
+                if (data.success && data.data) {
+                    const matched = data.data.matched || 0;
+                    const scanned = data.data.scanned || 0;
+                    this.cleanupStatus = `${matched} of ${scanned} torrents don't match the current filters.`;
+                } else {
+                    this.cleanupStatus = data.error || 'Check failed';
+                }
+            } catch (e) {
+                this.cleanupStatus = 'Check failed: ' + e.message;
+            }
+        },
+
+        async cleanTorrents() {
+            if (!confirm(this.t('settings.confirmClean') || 'Remove torrents that don\'t match the current filters?')) return;
+            this.cleanupStatus = this.t('settings.cleaningTorrents') || 'Cleaning...';
+            try {
+                const resp = await fetch('/api/torrent.cleanup?dryRun=false');
+                const data = await resp.json();
+                if (data.success && data.data) {
+                    const matched = data.data.matched || 0;
+                    this.cleanupStatus = `Removed ${matched} torrents that didn't match the filters.`;
+                } else {
+                    this.cleanupStatus = data.error || 'Clean failed';
+                }
+            } catch (e) {
+                this.cleanupStatus = 'Clean failed: ' + e.message;
+            }
+        },
+
         isContentTypeEnabled(type) {
             if (!this.config || !this.config.filters) return true;
             const ct = this.config.filters.contentType || '';
@@ -335,7 +370,7 @@ const app = createApp({
 
         async pauseDownload(hash) {
             try {
-                await fetch(`/api/downloads.update?hash=${hash}&pause=true`);
+                await fetch(`/api/download.pause?hash=${hash}`);
                 await this.loadDownloads();
             } catch (error) {
                 console.error('Pause error:', error);
@@ -344,7 +379,7 @@ const app = createApp({
 
         async resumeDownload(hash) {
             try {
-                await fetch(`/api/downloads.update?hash=${hash}&pause=false`);
+                await fetch(`/api/download.resume?hash=${hash}`);
                 await this.loadDownloads();
             } catch (error) {
                 console.error('Resume error:', error);
@@ -353,7 +388,7 @@ const app = createApp({
 
         async cancelDownload(hash) {
             try {
-                await fetch(`/api/downloads.cancel?hash=${hash}`);
+                await fetch(`/api/download.remove?hash=${hash}`);
                 await this.loadDownloads();
                 this.showToast(this.t('toast.downloadCancelled'), 'info');
             } catch (error) {
@@ -366,7 +401,7 @@ const app = createApp({
             this.torrentFiles = [];
 
             try {
-                const response = await fetch(`/api/search.torrent?hash=${torrent.hash}&files=true`);
+                const response = await fetch(`/api/torrent.get?hash=${torrent.hash}&files=true`);
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -497,7 +532,7 @@ const app = createApp({
         async voteGood() {
             if (!this.selectedTorrent) return;
             try {
-                await fetch(`/api/torrent.vote?hash=${this.selectedTorrent.hash}&isGood=true`);
+                await fetch(`/api/vote.cast?hash=${this.selectedTorrent.hash}&good=true`);
                 this.lastVote = 'good';
                 this.showToast(this.t('toast.voteGood'), 'success');
             } catch (e) {
@@ -508,7 +543,7 @@ const app = createApp({
         async voteBad() {
             if (!this.selectedTorrent) return;
             try {
-                await fetch(`/api/torrent.vote?hash=${this.selectedTorrent.hash}&isGood=false`);
+                await fetch(`/api/vote.cast?hash=${this.selectedTorrent.hash}&good=false`);
                 this.lastVote = 'bad';
                 this.showToast(this.t('toast.voteBad'), 'info');
             } catch (e) {
@@ -519,7 +554,7 @@ const app = createApp({
         async startDownload(torrent) {
             if (!torrent || !torrent.hash) return;
             try {
-                const resp = await fetch(`/api/downloads.add?hash=${torrent.hash}`);
+                const resp = await fetch(`/api/download.add?hash=${torrent.hash}`);
                 const data = await resp.json();
                 if (data.success) {
                     this.showToast(this.t('toast.downloadStarted'), 'success');
@@ -736,7 +771,7 @@ const app = createApp({
 
         async importTorrentByPath(path) {
             try {
-                const resp = await fetch(`/api/torrent.addFile?path=${encodeURIComponent(path)}`);
+                const resp = await fetch(`/api/download.addFile?path=${encodeURIComponent(path)}`);
                 const data = await resp.json();
                 if (data.success) {
                     const name = data.data?.name || path.split('/').pop();

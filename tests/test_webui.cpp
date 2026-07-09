@@ -3,8 +3,8 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTcpSocket>
-#include "api/apiserver.h"
-#include "api/ratsapi.h"
+#include "rest/api_server.h"
+#include "rest/api_router.h"
 
 class TestWebUI : public QObject
 {
@@ -27,9 +27,8 @@ private slots:
     void testMissingWebuiDir();
 
 private:
-    std::unique_ptr<RatsAPI> api;
-    std::unique_ptr<ApiServer> server;
-    QString savedCwd;
+    std::unique_ptr<rats::rest::ApiServer> server;
+    QString tempDirPath;
     int port = 0;
 
     QByteArray sendRequest(const QString& path);
@@ -40,62 +39,59 @@ private:
 
 void TestWebUI::initTestCase()
 {
-    savedCwd = QDir::currentPath();
-
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
+    tempDirPath = tempDir.path();
 
-    QDir().mkpath(tempDir.path() + "/webui/css");
-    QDir().mkpath(tempDir.path() + "/webui/js");
-    QDir().mkpath(tempDir.path() + "/webui/images");
+    QDir().mkpath(tempDirPath + "/webui/css");
+    QDir().mkpath(tempDirPath + "/webui/js");
+    QDir().mkpath(tempDirPath + "/webui/images");
 
     {
-        QFile f(tempDir.path() + "/webui/index.html");
+        QFile f(tempDirPath + "/webui/index.html");
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("<html><body>Test</body></html>");
         f.close();
     }
     {
-        QFile f(tempDir.path() + "/webui/css/style.css");
+        QFile f(tempDirPath + "/webui/css/style.css");
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("body { color: red; }");
         f.close();
     }
     {
-        QFile f(tempDir.path() + "/webui/js/app.js");
+        QFile f(tempDirPath + "/webui/js/app.js");
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("console.log('hello');");
         f.close();
     }
     {
-        QFile f(tempDir.path() + "/webui/config.json");
+        QFile f(tempDirPath + "/webui/config.json");
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("{\"key\": \"value\"}");
         f.close();
     }
     {
-        QFile f(tempDir.path() + "/webui/images/icon.png");
+        QFile f(tempDirPath + "/webui/images/icon.png");
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("\x89PNG");
         f.close();
     }
     {
-        QFile f(tempDir.path() + "/webui/logo.svg");
+        QFile f(tempDirPath + "/webui/logo.svg");
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("<svg></svg>");
         f.close();
     }
     {
-        QFile f(tempDir.path() + "/webui/readme.txt");
+        QFile f(tempDirPath + "/webui/readme.txt");
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("hello world");
         f.close();
     }
 
-    QDir::setCurrent(tempDir.path());
-
-    api = std::make_unique<RatsAPI>();
-    server = std::make_unique<ApiServer>(api.get());
+    server = std::make_unique<rats::rest::ApiServer>(nullptr);
+    server->setWebuiDir(tempDirPath + "/webui");
     QVERIFY(server->start(0));
     port = server->httpPort();
     QVERIFY(port > 0);
@@ -105,8 +101,6 @@ void TestWebUI::cleanupTestCase()
 {
     if (server) server->stop();
     server.reset();
-    api.reset();
-    QDir::setCurrent(savedCwd);
 }
 
 QByteArray TestWebUI::sendRequest(const QString& path)
@@ -184,7 +178,8 @@ void TestWebUI::testDirectoryTraversalViaHttp()
 
     for (const QString& path : paths) {
         QByteArray response = sendRequest(path);
-        QCOMPARE(getStatusCode(response), 404);
+        int status = getStatusCode(response);
+        QVERIFY(status == 404 || status == 403);
         QByteArray body = getBody(response);
         QVERIFY(!body.contains("root:"));
     }
