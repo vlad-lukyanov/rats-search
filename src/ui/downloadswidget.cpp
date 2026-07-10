@@ -227,11 +227,6 @@ void DownloadsWidget::setApplication(rats::app::Application* app)
     }
 }
 
-void DownloadsWidget::refresh()
-{
-    loadDownloads();
-}
-
 void DownloadsWidget::loadDownloads()
 {
     if (!app_ || !app_->downloads())
@@ -334,7 +329,7 @@ void DownloadsWidget::onProgressUpdated(const QString& hash, const QJsonObject& 
     if (downloadItems_.contains(hash)) {
         qint64 downloaded = progress["downloaded"].toVariant().toLongLong();
         qint64 total = progress["total"].toVariant().toLongLong();
-        int speed = progress["speed"].toInt();
+        int speed = progress["downloadSpeed"].toInt();
         double progressPercent = progress["progress"].toDouble();
         downloadItems_[hash]->updateProgress(downloaded, total, speed, progressPercent);
 

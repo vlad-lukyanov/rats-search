@@ -67,9 +67,6 @@ public:
 
     void setApplication(rats::app::Application* app);
 
-public slots:
-    void refresh();
-
 private slots:
     void onDownloadStarted(const QString& hash);
     void onProgressUpdated(const QString& hash, const QJsonObject& progress);

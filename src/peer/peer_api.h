@@ -33,10 +33,6 @@ class PeerApi : public QObject {
 public:
     explicit PeerApi(app::Application* app, QObject* parent = nullptr);
 
-    // Register every transport handler and the peer-connected hook. Called from
-    // the constructor; exposed so it can be re-run if the transport restarts.
-    void install();
-
 signals:
     // A remote peer sent search hits (torrent_search_result). Query is empty —
     // the wire protocol never echoes it back — and torrents is the raw wire array
@@ -50,6 +46,9 @@ signals:
     void remoteTorrentReceived(const QString& hash, const QJsonObject& data);
 
 private:
+    // Register every transport handler and the peer-connected hook.
+    void install();
+
     // Request handlers (we answer these) ---------------------------------------
     void handleSearchRequest(const QString& peerId, const QJsonObject& data);
     void handleSearchFilesRequest(const QString& peerId, const QJsonObject& data);

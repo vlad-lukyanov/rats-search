@@ -96,19 +96,6 @@ bool Database::insert(const QString& table, const QVariantMap& values)
     return runWrite(stmt, "INSERT", table);
 }
 
-bool Database::replace(const QString& table, const QVariantMap& values)
-{
-    QStringList columns;
-    QStringList literals;
-    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
-        columns << it.key();
-        literals << sql::formatValue(it.value());
-    }
-    const QString stmt = QStringLiteral("REPLACE INTO %1 (%2) VALUES (%3)")
-                             .arg(table, columns.join(QLatin1String(", ")), literals.join(QLatin1String(", ")));
-    return runWrite(stmt, "REPLACE", table);
-}
-
 bool Database::update(const QString& table, const QVariantMap& values, const QVariantMap& where)
 {
     QStringList setParts;

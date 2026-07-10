@@ -251,7 +251,7 @@ QVector<SearchHit> TorrentRepository::searchFiles(const SearchQuery& q)
 
     // SNIPPET highlights matching file paths; MATCH selects the rows.
     const QString sql = QStringLiteral("SELECT *, SNIPPET(path, ?, 'around=100', "
-                                       "'force_all_words=1') AS snipplet FROM "
+                                       "'force_all_words=1') AS snippet FROM "
                                        "files WHERE MATCH(?) LIMIT ?,?");
     const auto fileRows = db_->query(sql, { q.text, sql::escapeMatch(q.text), q.offset, q.limit });
     if (fileRows.isEmpty())
@@ -261,7 +261,7 @@ QVector<SearchHit> TorrentRepository::searchFiles(const SearchQuery& q)
     QStringList orderedHashes;
     for (const auto& row : fileRows) {
         const QString hash = row.value(QStringLiteral("hash")).toString();
-        for (const QString& line : row.value(QStringLiteral("snipplet")).toString().split(QLatin1Char('\n'))) {
+        for (const QString& line : row.value(QStringLiteral("snippet")).toString().split(QLatin1Char('\n'))) {
             if (line.contains(QLatin1String("<b>"))) {
                 if (!snippetsByHash.contains(hash))
                     orderedHashes << hash;

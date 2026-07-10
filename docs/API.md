@@ -112,6 +112,7 @@ See [WebSocket Events](#websocket-events) for details.
 | `search.recent` | Recently added torrents |
 | `torrent.get` | Get a single torrent by hash (DHT fallback) |
 | `torrent.remove` | Remove torrents by hash list |
+| `torrent.cleanup` | Re-apply the filter policy to the index and drop torrents that no longer pass |
 | `torrent.create` | Create a `.torrent` file (optionally start seeding) |
 | `torrent.import` | Parse a `.torrent` file and index it |
 | `download.add` | Start downloading (hash or magnet) |
@@ -261,6 +262,35 @@ Emits `torrent.remove.progress` WebSocket events during a large removal.
     "data": { "total": 2, "removed": 2 }
 }
 ```
+
+---
+
+#### `torrent.cleanup` - Re-apply filters to the whole index
+
+Walks every indexed torrent and checks it against the current filter policy
+(`filters.*` config keys), removing the ones that no longer pass. Use it after
+tightening the adult/size/content-type filters.
+
+```
+GET http://localhost:8095/api/torrent.cleanup?dryRun=true
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `dryRun` | bool | no | `false` | Only count the matches; remove nothing |
+
+Emits `torrent.cleanup.progress` WebSocket events while it sweeps.
+
+**Response:**
+
+```json
+{
+    "success": true,
+    "data": { "dryRun": true, "scanned": 12045, "matched": 317, "removed": 0 }
+}
+```
+
+`removed` is always `0` when `dryRun` is set; otherwise it equals `matched`.
 
 ---
 
@@ -574,13 +604,20 @@ When up to date: `{ "available": false }`.
 
 ## WebSocket Events
 
-Push events are broadcast to all connected WebSocket clients as `{ "event": name, "data": {…} }`. Events are emitted by `ApiRouter::event()` as work progresses.
+Push events are broadcast to all connected WebSocket clients as `{ "event": name, "data": {…} }`. Events are emitted by `ApiRouter::event()` as work progresses. Event names and payload shapes are part of the published contract.
 
 | Event | Description | Data |
 |-------|-------------|------|
+| `downloadProgress` | A download advanced (emitted at most once per second, and only when the payload changed) | `{ "hash": "…", "downloaded": 1024, "total": 4096, "progress": 0.25, "downloadSpeed": 512, "paused": false, "removeOnDone": false, "timeRemaining": 6 }` |
+| `downloadCompleted` | A download finished | `{ "hash": "…", "cancelled": false }` |
+| `filesReady` | A magnet's metadata arrived, so its file list is now known | `{ "hash": "…", "files": [ { "path": "a.mkv", "size": 1024, "index": 0, "selected": true, "progress": 0.0 } ] }` |
+| `torrentIndexed` | A genuinely new torrent entered the index | `{ "hash": "…", "name": "…" }` |
+| `votesUpdated` | Vote counts for a torrent changed (local or remote vote) | `{ "hash": "…", "good": 3, "bad": 1 }` |
+| `feedUpdated` | The feed changed | `{ "feed": [ …torrent objects… ] }` |
+| `configChanged` | One or more config keys were written | The full config object plus `"changedKeys": ["filters.adultFilter"]` |
+| `remoteSearchResults` | A peer answered a P2P search | `{ "searchId": "…", "torrents": [ …torrent objects… ] }` |
 | `torrent.remove.progress` | Progress of a bulk `torrent.remove` | `{ "processed": 100, "removed": 98, "total": 500 }` |
-
-> The peer/UI layers additionally observe remote P2P activity (remote search results, replicated torrents, feed/vote updates) through `PeerApi` Qt signals; those are surfaced in the GUI. The WebSocket channel forwards whatever `ApiRouter` broadcasts.
+| `torrent.cleanup.progress` | Progress of a `torrent.cleanup` sweep | `{ "scanned": 5000, "matched": 120, "total": 12045 }` |
 
 ---
 

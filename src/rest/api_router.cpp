@@ -232,15 +232,10 @@ void ApiRouter::call(const QString& method, const QJsonObject& params, const Res
 {
     auto it = handlers_.constFind(method);
     if (it == handlers_.constEnd()) {
-        respond(Result::failure(QStringLiteral("Unknown method: %1").arg(method), QStringLiteral("unknown_method")));
+        respond(Result::failure(QStringLiteral("Unknown method: %1").arg(method)));
         return;
     }
     it.value()(params, respond);
-}
-
-QStringList ApiRouter::methods() const
-{
-    return handlers_.keys();
 }
 
 void ApiRouter::registerMethods()
