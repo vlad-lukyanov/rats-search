@@ -13,7 +13,7 @@ IndexingService::IndexingService(data::TorrentRepository* repository, FilterPoli
 {
 }
 
-IndexingService::Result IndexingService::insert(domain::Torrent torrent, bool classify)
+IndexingService::Result IndexingService::insert(domain::Torrent torrent)
 {
     Result result;
 
@@ -42,7 +42,7 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent, bool cl
         return result;
     }
 
-    if (classify && torrent.contentType == domain::ContentType::Unknown)
+    if (torrent.contentType == domain::ContentType::Unknown)
         domain::ContentClassifier::classify(torrent);
 
     if (filter_) {

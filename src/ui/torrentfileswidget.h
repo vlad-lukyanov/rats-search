@@ -61,16 +61,6 @@ public:
      */
     void clear();
 
-    /**
-     * @brief Check if widget has any files loaded
-     */
-    bool isEmpty() const { return currentHash_.isEmpty(); }
-
-    /**
-     * @brief Get current torrent hash
-     */
-    QString currentHash() const { return currentHash_; }
-
 private slots:
     void onFileItemChanged(QTreeWidgetItem* item, int column);
 

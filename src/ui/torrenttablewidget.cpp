@@ -1,14 +1,11 @@
 #include "torrenttablewidget.h"
 #include "searchresultmodel.h"
 #include "torrentitemdelegate.h"
+#include "torrentmenu.h"
 
-#include <QApplication>
-#include <QClipboard>
-#include <QDesktopServices>
 #include <QHeaderView>
 #include <QMenu>
 #include <QTableView>
-#include <QUrl>
 #include <QVBoxLayout>
 
 TorrentTableWidget::TorrentTableWidget(QWidget* parent) : QWidget(parent)
@@ -142,18 +139,7 @@ void TorrentTableWidget::handleContextMenu(const QPoint& pos)
 QMenu* TorrentTableWidget::buildContextMenu(const rats::domain::Torrent& torrent)
 {
     QMenu* menu = new QMenu(this);
-
-    QAction* magnetAction = menu->addAction(tr("Open Magnet Link"));
-    connect(magnetAction, &QAction::triggered, this,
-        [torrent]() { QDesktopServices::openUrl(QUrl(torrent.magnetLink())); });
-
-    QAction* copyHashAction = menu->addAction(tr("Copy Info Hash"));
-    connect(
-        copyHashAction, &QAction::triggered, this, [torrent]() { QApplication::clipboard()->setText(torrent.hash); });
-
-    QAction* copyMagnetAction = menu->addAction(tr("Copy Magnet Link"));
-    connect(copyMagnetAction, &QAction::triggered, this,
-        [torrent]() { QApplication::clipboard()->setText(torrent.magnetLink()); });
+    rats::ui::addTorrentActions(menu, this, torrent);
 
     menu->addSeparator();
 

@@ -233,15 +233,10 @@ void ApiRouter::call(const QString& method, const QJsonObject& params, const Res
 {
     auto it = handlers_.constFind(method);
     if (it == handlers_.constEnd()) {
-        respond(Result::failure(QStringLiteral("Unknown method: %1").arg(method), QStringLiteral("unknown_method")));
+        respond(Result::failure(QStringLiteral("Unknown method: %1").arg(method)));
         return;
     }
     it.value()(params, respond);
-}
-
-QStringList ApiRouter::methods() const
-{
-    return handlers_.keys();
 }
 
 void ApiRouter::registerMethods()
@@ -676,7 +671,7 @@ void ApiRouter::registerMethods()
         svc->checkForUpdates();
     });
 
-    // torrent.export: returns cache path and triggers async .torrent generation
+    // torrent.export: triggers async .torrent generation, returns hash for tracking
     add("torrent.export", [this](const QJsonObject& params, const ResultCallback& respond) {
         const QString hash = infohash::normalize(params["hash"].toString());
         if (!infohash::isValid(hash)) {
@@ -688,11 +683,10 @@ void ApiRouter::registerMethods()
             respond(Result::failure("Torrent not found"));
             return;
         }
-        const QString path = app_->exporter()->cachePath(hash);
-        QJsonObject result;
-        result["path"] = path;
-        result["name"] = opt->name;
         app_->exporter()->requestExport(hash, opt->name);
+        QJsonObject result;
+        result["name"] = opt->name;
+        result["hash"] = hash;
         respond(Result::success(result));
     });
 }

@@ -1,4 +1,4 @@
-#include "net/tracker_scraper.h"
+#include "net/swarm_scraper.h"
 
 #include <QDebug>
 #include <QtConcurrent>
@@ -87,20 +87,14 @@ AnnounceResult announceOne(const std::string& url, const std::string& hashHex, i
 // Constructor / Destructor
 // ============================================================================
 
-TrackerScraper::TrackerScraper(QObject* parent)
-    : QObject(parent)
-    , timeoutMs_(kDefaultTimeoutMs)
-    , checkIntervalSecs_(kDefaultCheckIntervalSecs)
-    , maxConcurrent_(kDefaultMaxConcurrent)
-    , activeRequests_(0)
-    , queueTimer_(nullptr)
+SwarmScraper::SwarmScraper(QObject* parent) : QObject(parent), activeRequests_(0), queueTimer_(nullptr)
 {
     queueTimer_ = new QTimer(this);
     queueTimer_->setInterval(kQueuePollIntervalMs);
-    connect(queueTimer_, &QTimer::timeout, this, &TrackerScraper::processQueue);
+    connect(queueTimer_, &QTimer::timeout, this, &SwarmScraper::processQueue);
 }
 
-TrackerScraper::~TrackerScraper()
+SwarmScraper::~SwarmScraper()
 {
     if (queueTimer_) {
         queueTimer_->stop();
@@ -111,10 +105,10 @@ TrackerScraper::~TrackerScraper()
 // Public Methods
 // ============================================================================
 
-void TrackerScraper::requestScrape(const QString& infoHash, const QStringList& trackers)
+void SwarmScraper::requestScrape(const QString& infoHash, const QStringList& trackers)
 {
     if (infoHash.length() != kInfoHashHexLength) {
-        qWarning() << "TrackerScraper: ignoring invalid info-hash" << infoHash;
+        qWarning() << "SwarmScraper: ignoring invalid info-hash" << infoHash;
         return;
     }
 
@@ -129,14 +123,14 @@ void TrackerScraper::requestScrape(const QString& infoHash, const QStringList& t
         QMutexLocker locker(&recentChecksMutex_);
         const QDateTime now = QDateTime::currentDateTime();
 
-        if (!lastPrune_.isValid() || lastPrune_.secsTo(now) >= checkIntervalSecs_) {
+        if (!lastPrune_.isValid() || lastPrune_.secsTo(now) >= kCheckIntervalSecs) {
             pruneStaleChecks(now);
             lastPrune_ = now;
         }
 
         auto it = recentChecks_.constFind(infoHash);
-        if (it != recentChecks_.constEnd() && it.value().secsTo(now) < checkIntervalSecs_) {
-            qDebug() << "TrackerScraper: skipping" << infoHash.left(8) << "- checked" << it.value().secsTo(now)
+        if (it != recentChecks_.constEnd() && it.value().secsTo(now) < kCheckIntervalSecs) {
+            qDebug() << "SwarmScraper: skipping" << infoHash.left(8) << "- checked" << it.value().secsTo(now)
                      << "secs ago";
             return;
         }
@@ -146,9 +140,9 @@ void TrackerScraper::requestScrape(const QString& infoHash, const QStringList& t
     // Start immediately if under the concurrency cap, otherwise queue.
     {
         QMutexLocker locker(&queueMutex_);
-        if (activeRequests_ >= maxConcurrent_) {
+        if (activeRequests_ >= kMaxConcurrent) {
             pendingQueue_.enqueue({ infoHash, effectiveTrackers });
-            qDebug() << "TrackerScraper: queued" << infoHash.left(8) << "- active:" << activeRequests_
+            qDebug() << "SwarmScraper: queued" << infoHash.left(8) << "- active:" << activeRequests_
                      << "queued:" << pendingQueue_.size();
             if (!queueTimer_->isActive()) {
                 queueTimer_->start();
@@ -165,10 +159,10 @@ void TrackerScraper::requestScrape(const QString& infoHash, const QStringList& t
 // Private Methods
 // ============================================================================
 
-void TrackerScraper::pruneStaleChecks(const QDateTime& now)
+void SwarmScraper::pruneStaleChecks(const QDateTime& now)
 {
     for (auto it = recentChecks_.begin(); it != recentChecks_.end();) {
-        if (it.value().secsTo(now) >= checkIntervalSecs_) {
+        if (it.value().secsTo(now) >= kCheckIntervalSecs) {
             it = recentChecks_.erase(it);
         } else {
             ++it;
@@ -176,12 +170,12 @@ void TrackerScraper::pruneStaleChecks(const QDateTime& now)
     }
 }
 
-void TrackerScraper::processQueue()
+void SwarmScraper::processQueue()
 {
     QMutexLocker locker(&queueMutex_);
 
     // Drain as many queued requests as the concurrency cap allows.
-    while (!pendingQueue_.isEmpty() && activeRequests_ < maxConcurrent_) {
+    while (!pendingQueue_.isEmpty() && activeRequests_ < kMaxConcurrent) {
         PendingRequest req = pendingQueue_.dequeue();
         activeRequests_++;
 
@@ -196,10 +190,10 @@ void TrackerScraper::processQueue()
     }
 }
 
-void TrackerScraper::startScrape(const QString& infoHash, const QStringList& trackers)
+void SwarmScraper::startScrape(const QString& infoHash, const QStringList& trackers)
 {
     const std::string hashStd = infoHash.toStdString();
-    const int timeout = timeoutMs_;
+    const int timeout = kTimeoutMs;
 
     // Run the blocking announces off the Qt thread pool.
     // (void) suppresses the [[nodiscard]] warning on the unused QFuture.

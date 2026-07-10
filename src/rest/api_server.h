@@ -52,18 +52,15 @@ public:
     bool start(int httpPort = 8095, int wsPort = -1);
     void stop();
 
-    bool isRunning() const;
-    int httpPort() const;
-    int wsPort() const;
-
-    // Push an event to every connected WebSocket client.
-    void broadcastEvent(const QString& event, const QJsonValue& data);
-
     // Set webui directory for static file serving
     void setWebuiDir(const QString& dir);
 
     // Set application pointer for metrics (P2P, DB, crawler, downloads)
     void setApplication(rats::app::Application* app);
+
+private:
+    // Push an event to every connected WebSocket client.
+    void broadcastEvent(const QString& event, const QJsonValue& data);
 
     // Health & Metrics endpoints
     QByteArray handleHealthz() const;
@@ -71,12 +68,6 @@ public:
     QByteArray handleMetrics() const;
     QByteArray handleStaticFile(const QString& path) const;
 
-signals:
-    void started();
-    void stopped();
-    void error(const QString& message);
-
-private:
     void onHttpReadyRead(QTcpSocket* socket);
     void dispatchHttp(QTcpSocket* socket, const QString& method, const QJsonObject& params);
     void onWsMessage(QWebSocket* socket, const QString& message);

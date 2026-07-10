@@ -276,7 +276,6 @@ bool P2PTransport::start()
         // --- Bring the node (and all subsystems) up -----------------------
         if (!d_->node->start()) {
             qWarning() << "Failed to start librats node";
-            emit error("Failed to start P2P transport");
             d_->node.reset();
             d_->dht = nullptr;
             d_->mdns = nullptr;
@@ -315,7 +314,6 @@ bool P2PTransport::start()
 
     } catch (const std::exception& e) {
         qCritical() << "Exception starting P2P transport:" << e.what();
-        emit error(QString("Failed to start P2P transport: %1").arg(e.what()));
         return false;
     }
 }
@@ -459,11 +457,6 @@ bool P2PTransport::isBitTorrentEnabled() const
 // =========================================================================
 // Borrowed librats subsystems
 // =========================================================================
-
-librats::Node* P2PTransport::node() const
-{
-    return d_->node.get();
-}
 
 librats::Bittorrent* P2PTransport::bittorrent() const
 {

@@ -127,7 +127,6 @@ bool DownloadService::add(const QString& magnetLink, const QString& savePath)
     d.hash = hash;
     d.name = hash; // placeholder until metadata arrives
     d.savePath = path;
-    d.added = true;
     d.ready = false;
     {
         QMutexLocker lock(&mutex_);
@@ -169,7 +168,6 @@ bool DownloadService::addWithInfo(const domain::Torrent& info, const QString& sa
     d.name = info.name.isEmpty() ? hash : info.name;
     d.totalSize = info.size;
     d.savePath = path;
-    d.added = true;
     d.ready = false; // metadata (authoritative name/files) not yet known
     d.completed = false;
     {
@@ -215,7 +213,6 @@ bool DownloadService::addFromFile(const QString& torrentFile, const QString& sav
     d.name = meta.name;
     d.savePath = path;
     d.totalSize = meta.totalSize;
-    d.added = true;
     d.ready = true;
     for (int i = 0; i < meta.files.size(); ++i) {
         DownloadFile f;
@@ -235,10 +232,8 @@ bool DownloadService::addFromFile(const QString& torrentFile, const QString& sav
     return true;
 }
 
-bool DownloadService::restore(const QString& hash, const QString& name, const QString& savePath, bool wasCompleted)
+bool DownloadService::restore(const QString& hash, const QString& name, const QString& savePath)
 {
-    Q_UNUSED(wasCompleted);
-
     if (!isReady()) {
         qWarning() << "DownloadService: Not ready for restore";
         return false;
@@ -263,7 +258,6 @@ bool DownloadService::restore(const QString& hash, const QString& name, const QS
     d.hash = h;
     d.savePath = path;
     d.name = name.isEmpty() ? h : name;
-    d.added = true;
     d.ready = false;
 
     // If resume data already brought back the metadata, populate immediately.
@@ -330,7 +324,6 @@ bool DownloadService::pause(const QString& hash)
     }
 
     engine_->pause(h);
-    emit stateChanged(h, QJsonObject { { "paused", true } });
     return true;
 }
 
@@ -351,7 +344,6 @@ bool DownloadService::resume(const QString& hash)
     }
 
     engine_->resume(h);
-    emit stateChanged(h, QJsonObject { { "paused", false } });
     return true;
 }
 
@@ -429,20 +421,10 @@ bool DownloadService::selectFilesJson(const QString& hash, const QJsonValue& sel
 
 void DownloadService::setRemoveOnDone(const QString& hash, bool removeOnDone)
 {
-    const QString h = infohash::normalize(hash);
-
-    bool found = false;
-    {
-        QMutexLocker lock(&mutex_);
-        auto it = downloads_.find(h);
-        if (it != downloads_.end()) {
-            it->removeOnDone = removeOnDone;
-            found = true;
-        }
-    }
-
-    if (found) {
-        emit stateChanged(h, QJsonObject { { "removeOnDone", removeOnDone } });
+    QMutexLocker lock(&mutex_);
+    auto it = downloads_.find(infohash::normalize(hash));
+    if (it != downloads_.end()) {
+        it->removeOnDone = removeOnDone;
     }
 }
 
@@ -457,7 +439,6 @@ QString DownloadService::registerSeed(const net::SeedResult& seed)
     d.totalSize = seed.totalSize;
     d.downloadedBytes = seed.totalSize; // already complete for seeding
     d.progress = 1.0;
-    d.added = true;
     d.ready = true;
     d.completed = true;
     for (int i = 0; i < seed.files.size(); ++i) {
@@ -510,12 +491,6 @@ QVector<Download> DownloadService::allDownloads() const
         result.append(d);
     }
     return result;
-}
-
-int DownloadService::count() const
-{
-    QMutexLocker lock(&mutex_);
-    return downloads_.size();
 }
 
 QJsonArray DownloadService::toJsonArray() const
@@ -575,7 +550,7 @@ int DownloadService::loadSession(const QString& filePath)
         qInfo() << "DownloadService: Restoring torrent:" << e.hash.left(8) << e.name.left(30)
                 << (e.completed ? "(completed/seeding)" : "(downloading)");
 
-        if (restore(e.hash, e.name, e.savePath, e.completed)) {
+        if (restore(e.hash, e.name, e.savePath)) {
             if (e.paused) {
                 pause(e.hash);
             }
@@ -786,11 +761,9 @@ QJsonArray DownloadService::filesToJson(const QVector<DownloadFile>& files)
 QJsonObject DownloadService::progressJson(const Download& d)
 {
     QJsonObject o;
-    o["received"] = d.downloadedBytes;
     o["downloaded"] = d.downloadedBytes;
     o["total"] = d.totalSize;
     o["progress"] = d.progress;
-    o["speed"] = static_cast<int>(d.downloadSpeed);
     o["downloadSpeed"] = static_cast<int>(d.downloadSpeed);
     o["paused"] = d.paused;
     o["removeOnDone"] = d.removeOnDone;
