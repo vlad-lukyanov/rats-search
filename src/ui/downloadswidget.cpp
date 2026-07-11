@@ -1,7 +1,10 @@
 #include "downloadswidget.h"
 #include "app/application.h"
+#include "app/favorites_store.h"
+#include "domain/torrent.h"
 #include "format.h"
 #include "services/download_service.h"
+#include "services/search_service.h"
 #include <QDesktopServices>
 #include <QDir>
 #include <QJsonArray>
@@ -70,6 +73,11 @@ void DownloadItemWidget::setupUi(const QString& name, qint64 size)
 
     bottomRow->addStretch();
 
+    favoriteButton_ = new QPushButton(tr("⭐ Favorite"), this);
+    favoriteButton_->setObjectName("secondaryButton");
+    connect(favoriteButton_, &QPushButton::clicked, this, [this]() { emit favoriteRequested(hash_); });
+    bottomRow->addWidget(favoriteButton_);
+
     pauseButton_ = new QPushButton(tr("Pause"), this);
     pauseButton_->setObjectName("secondaryButton");
     connect(pauseButton_, &QPushButton::clicked, this, [this]() { emit pauseToggled(hash_); });
@@ -134,7 +142,11 @@ void DownloadItemWidget::setCompleted()
     pauseButton_->style()->polish(pauseButton_);
     disconnect(pauseButton_, &QPushButton::clicked, nullptr, nullptr);
     connect(pauseButton_, &QPushButton::clicked, this, [this]() { emit openRequested(hash_); });
-    cancelButton_->hide();
+
+    // A completed torrent can no longer be "cancelled", but it can still be
+    // removed from the list (and stops seeding); relabel rather than hide so the
+    // action stays reachable.
+    cancelButton_->setText(tr("Remove"));
 }
 
 void DownloadItemWidget::setPaused(bool paused)
@@ -153,6 +165,19 @@ void DownloadItemWidget::setPaused(bool paused)
     }
     progressBar_->style()->unpolish(progressBar_);
     progressBar_->style()->polish(progressBar_);
+}
+
+void DownloadItemWidget::setFavorite(bool favorite)
+{
+    if (favorite) {
+        favoriteButton_->setText(tr("★ Favorited"));
+        favoriteButton_->setObjectName("warningButton");
+    } else {
+        favoriteButton_->setText(tr("⭐ Favorite"));
+        favoriteButton_->setObjectName("secondaryButton");
+    }
+    favoriteButton_->style()->unpolish(favoriteButton_);
+    favoriteButton_->style()->polish(favoriteButton_);
 }
 
 QString DownloadItemWidget::formatTime(qint64 seconds) const
@@ -243,6 +268,11 @@ void DownloadsWidget::setApplication(rats::app::Application* app)
             downloads, &rats::service::DownloadService::torrentRemoved, this, &DownloadsWidget::onDownloadCancelled);
         loadDownloads();
     }
+
+    if (app_ && app_->favorites()) {
+        connect(app_->favorites(), &rats::app::FavoritesStore::favoritesChanged, this,
+            &DownloadsWidget::refreshFavorites);
+    }
 }
 
 void DownloadsWidget::loadDownloads()
@@ -295,6 +325,10 @@ void DownloadsWidget::addDownloadItem(const QString& hash, const QString& name, 
     connect(item, &DownloadItemWidget::pauseToggled, this, &DownloadsWidget::onPauseToggled);
     connect(item, &DownloadItemWidget::cancelRequested, this, &DownloadsWidget::onCancelRequested);
     connect(item, &DownloadItemWidget::openRequested, this, &DownloadsWidget::onOpenRequested);
+    connect(item, &DownloadItemWidget::favoriteRequested, this, &DownloadsWidget::onFavoriteRequested);
+
+    if (app_ && app_->favorites())
+        item->setFavorite(app_->favorites()->isFavorite(hash));
 
     // Insert before the stretch
     listLayout_->insertWidget(listLayout_->count() - 1, item);
@@ -414,4 +448,48 @@ void DownloadsWidget::onOpenRequested(const QString& hash)
         return;
     }
     QDesktopServices::openUrl(QUrl::fromLocalFile(savePath));
+}
+
+void DownloadsWidget::onFavoriteRequested(const QString& hash)
+{
+    if (!app_ || !app_->favorites() || !app_->downloads())
+        return;
+
+    rats::app::FavoritesStore* fav = app_->favorites();
+    if (fav->isFavorite(hash)) {
+        fav->remove(hash);
+        return;
+    }
+
+    // Prefer the fully indexed torrent (poster, votes, trackers). Fall back to
+    // the live download metadata when it hasn't been indexed.
+    rats::domain::Torrent torrent;
+    if (app_->search()) {
+        if (auto indexed = app_->search()->get(hash))
+            torrent = *indexed;
+    }
+
+    if (!torrent.isValid()) {
+        const rats::service::Download dl = app_->downloads()->getDownload(hash);
+        torrent.hash = dl.hash;
+        torrent.name = dl.name;
+        torrent.size = dl.totalSize;
+        torrent.files = dl.files.size();
+        for (const rats::service::DownloadFile& f : dl.files)
+            torrent.fileList.append({ f.path, f.size });
+    }
+
+    fav->add(torrent);
+    // The button refresh is driven by FavoritesStore::favoritesChanged →
+    // refreshFavorites(), so no direct setFavorite() call is needed here.
+}
+
+void DownloadsWidget::refreshFavorites()
+{
+    if (!app_ || !app_->favorites())
+        return;
+
+    for (auto it = downloadItems_.begin(); it != downloadItems_.end(); ++it) {
+        (*it)->setFavorite(app_->favorites()->isFavorite(it.key()));
+    }
 }
