@@ -3,6 +3,7 @@
 #include <QDebug>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 
 // librats' BitTorrent headers use `emit`/`slots`/`signals` as ordinary
@@ -63,7 +64,8 @@ struct ScrapeState {
 // Announce to a single tracker to read the torrent's seeder/leecher counts. An
 // announce with numwant=0 doubles as a scrape: the tracker still reports the
 // swarm counts (BEP 3 complete/incomplete, BEP 15 seeders/leechers).
-AnnounceResult announceOne(const std::string& url, const std::string& hashHex, int timeoutMs)
+AnnounceResult announceOne(const std::string& url, const std::string& hashHex, int timeoutMs,
+    const std::function<bool()>& cancelled)
 {
     AnnounceResult result;
 
@@ -81,7 +83,7 @@ AnnounceResult announceOne(const std::string& url, const std::string& hashHex, i
     req.left = 0;
     req.numwant = 0; // counts only, no peer list
 
-    bt::TrackerResponse resp = bt::announce_to_tracker(url, req, timeoutMs);
+    bt::TrackerResponse resp = bt::announce_to_tracker(url, req, timeoutMs, cancelled);
     if (resp.success) {
         result.success = true;
         result.seeders = static_cast<int>(resp.complete);
@@ -248,8 +250,10 @@ void SwarmScraper::startScrape(const QString& infoHash, const QStringList& track
         threadPool_.start([this, infoHash, state, url, hashStd, timeout]() {
             // Skip the (blocking) announce entirely once shutdown starts, so a
             // stop() drains the pool promptly instead of firing every tracker.
+            // The cancel predicate also aborts an announce already in progress
+            // within ~one poll slice, so waitForDone() in stop() returns fast.
             if (!stopping_.load()) {
-                AnnounceResult one = announceOne(url, hashStd, timeout);
+                AnnounceResult one = announceOne(url, hashStd, timeout, [this] { return stopping_.load(); });
                 if (one.success) {
                     QMutexLocker locker(&state->mutex);
                     if (!state->best.success || one.seeders > state->best.seeders) {
