@@ -405,6 +405,11 @@ QSqlDatabase Manticore::getDatabase() const
         db.setHostName("127.0.0.1");
         db.setPort(port_);
         db.setDatabaseName("");
+        // Auto-reconnect transparently after searchd drops the connection
+        // (restart, idle timeout). Without this a stale connection reports
+        // isOpen()==true, so the lazy `!isOpen() && !open()` guard never
+        // re-opens it and queries fail hard instead of self-healing.
+        db.setConnectOptions("MYSQL_OPT_RECONNECT=1");
     }
 
     return QSqlDatabase::database(threadConnName);
