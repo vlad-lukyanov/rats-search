@@ -121,12 +121,18 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     wireWidgets();
     connectSignals();
 
-    // Seed the status bar from live state.
+    // Seed the status bar from live state. The transport starts before the window
+    // exists (and the agreement dialog above spins a nested event loop), so peers
+    // may already be connected: peerCountChanged only fires on a change, and every
+    // emit before connectSignals() is lost.
     if (app_->torrents()) {
         cachedTorrentCount_ = app_->torrents()->statistics().torrents;
     }
     if (app_->peers()) {
         cachedRemoteTorrentCount_ = app_->peers()->remoteTorrentsCount();
+    }
+    if (app_->transport()) {
+        onPeerCountChanged(app_->transport()->peerCount());
     }
     updateStatusBar();
     refreshP2PStatus();
