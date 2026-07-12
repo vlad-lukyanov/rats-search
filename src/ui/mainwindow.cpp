@@ -229,7 +229,7 @@ void MainWindow::setupUi()
     mainSplitter->setHandleWidth(2);
 
     tabWidget = new QTabWidget(this);
-    tabWidget->setDocumentMode(true);
+    tabWidget->setDocumentMode(false);
 
     // Search results tab
     QWidget* searchTab = new QWidget();

@@ -11,7 +11,10 @@
 TorrentTableWidget::TorrentTableWidget(QWidget* parent) : QWidget(parent)
 {
     mainLayout_ = new QVBoxLayout(this);
-    mainLayout_->setContentsMargins(0, 0, 0, 0);
+    // Top margin keeps the page's own content off the main tab bar — without it
+    // the category tabs of the Top page butt straight up against the tabs above
+    // them and the two rows read as one.
+    mainLayout_->setContentsMargins(0, 8, 0, 0);
     mainLayout_->setSpacing(0);
 
     setupTable();
