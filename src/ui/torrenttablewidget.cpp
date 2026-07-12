@@ -30,7 +30,12 @@ void TorrentTableWidget::setupTable()
     tableView_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tableView_->setSelectionMode(QAbstractItemView::SingleSelection);
     tableView_->setAlternatingRowColors(true);
-    tableView_->setSortingEnabled(false);
+    // Start with no sort indicator, so enabling sorting does not immediately
+    // re-sort by column 0 and destroy the order the page loaded with (top = by
+    // seeders, feed = by date). SearchResultModel::sort() then takes over on the
+    // first header click, and setResults() re-applies it across refreshes.
+    tableView_->horizontalHeader()->setSortIndicator(-1, Qt::AscendingOrder);
+    tableView_->setSortingEnabled(true);
     tableView_->horizontalHeader()->setStretchLastSection(true);
     tableView_->verticalHeader()->setVisible(false);
     tableView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
