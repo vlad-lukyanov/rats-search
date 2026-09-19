@@ -77,7 +77,7 @@ signals:
     void stopped();
     void error(const QString& message);
 
-
+private:
     void onHttpReadyRead(QTcpSocket* socket);
     void dispatchHttp(QTcpSocket* socket, const QString& method, const QJsonObject& params);
     void onWsMessage(QWebSocket* socket, const QString& message);
