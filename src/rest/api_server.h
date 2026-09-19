@@ -72,6 +72,12 @@ private:
     QByteArray handleReadyz() const;
     QByteArray handleMetrics() const;
 
+signals:
+    void started();
+    void stopped();
+    void error(const QString& message);
+
+
     void onHttpReadyRead(QTcpSocket* socket);
     void dispatchHttp(QTcpSocket* socket, const QString& method, const QJsonObject& params);
     void onWsMessage(QWebSocket* socket, const QString& message);

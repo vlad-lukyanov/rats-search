@@ -232,6 +232,7 @@ bool ApiServer::start(int httpPort, int wsPort)
 
     running_ = true;
     startTimeMs_ = QDateTime::currentMSecsSinceEpoch();
+    emit started();
     return true;
 }
 
