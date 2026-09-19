@@ -256,8 +256,16 @@ void ApiRouter::wireEvents()
             emit event(QStringLiteral("filesReady"), QJsonObject { { "hash", hash }, { "files", files } });
         });
     connect(app_->indexing(), &service::IndexingService::torrentIndexed, this, [this](const domain::Torrent& torrent) {
-        emit event(
-            QStringLiteral("torrentIndexed"), QJsonObject { { "hash", torrent.hash }, { "name", torrent.name } });
+        emit event(QStringLiteral("torrentIndexed"), QJsonObject {
+            { "hash", torrent.hash },
+            { "name", torrent.name },
+            { "size", torrent.size },
+            { "files", torrent.files },
+            { "seeders", torrent.seeders },
+            { "leechers", torrent.leechers },
+            { "contentType", domain::toString(torrent.contentType) },
+            { "contentCategory", domain::toString(torrent.contentCategory) },
+        });
     });
     connect(
         app_->voting(), &service::VotingService::votesUpdated, this, [this](const QString& hash, int good, int bad) {
