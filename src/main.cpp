@@ -9,13 +9,19 @@
 #include <csignal>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "app/application.h"
 #include "app/config_store.h"
 #include "bootstrap/legacymigration.h"
+#include "bootstrap/single_instance.h"
 #include "bootstrap/startupinfo.h"
+#include "common/logging.h"
+#include "librats/util/logger.h"
 #include "mainwindow.h"
-#include "util/logger.h"
+#include "migrationprogresswindow.h"
+#include "services/migration_service.h"
 #include "version.h"
 
 #ifdef _WIN32
@@ -97,9 +103,21 @@ static void signalHandler(int)
 // ============================================================================
 // Shared startup, used identically by console and GUI modes.
 // ============================================================================
+// Parse an on/off style CLI value. Returns nullopt for anything unrecognised so
+// the caller can reject it loudly instead of silently picking a default.
+static std::optional<bool> parseBoolOption(const QString& value)
+{
+    const QString v = value.trimmed().toLower();
+    if (v == QLatin1String("on") || v == QLatin1String("true") || v == QLatin1String("yes") || v == QLatin1String("1"))
+        return true;
+    if (v == QLatin1String("off") || v == QLatin1String("false") || v == QLatin1String("no") || v == QLatin1String("0"))
+        return false;
+    return std::nullopt;
+}
+
 static void addCommonOptions(QCommandLineParser& parser, QCommandLineOption& port, QCommandLineOption& dhtPort,
     QCommandLineOption& dataDir, QCommandLineOption& maxPeers, QCommandLineOption& spider, QCommandLineOption& console,
-    QCommandLineOption& webuiDir)
+    QCommandLineOption& webuiDir, QCommandLineOption& shareDb)
 {
     parser.setApplicationDescription(QStringLiteral("Rats Search - BitTorrent P2P Search Engine"));
     parser.addHelpOption();
@@ -111,6 +129,7 @@ static void addCommonOptions(QCommandLineParser& parser, QCommandLineOption& por
     parser.addOption(maxPeers);
     parser.addOption(spider);
     parser.addOption(webuiDir);
+    parser.addOption(shareDb);
 }
 
 static QString resolveDataDirectory(QCommandLineParser& parser, const QCommandLineOption& dataDirOption)
@@ -132,8 +151,10 @@ static void configureLogging(const QString& dataDir)
     auto& logger = librats::Logger::getInstance();
     const QString logFilePath = dataDir + QStringLiteral("/rats-search.log");
     logger.set_log_file_path(logFilePath.toStdString());
-    logger.set_log_rotation_size(0);
-    logger.set_log_retention_count(2);
+    // Bounded from the first line on: config lives inside the data directory and
+    // is not loaded yet, so start on the default budget. Application::applyConfig()
+    // re-applies the stored logMaxSizeMb moments later, and on every later change.
+    rats::common::applyLogSizeBudget(rats::common::kDefaultLogMaxSizeMb);
     logger.set_rotate_on_startup(true); // must precede set_file_logging_enabled()
     logger.set_file_logging_enabled(true);
 #ifdef NDEBUG
@@ -143,6 +164,52 @@ static void configureLogging(const QString& dataDir)
 #endif
     qInfo() << "Log file:" << logFilePath;
     logStartupInfo(dataDir);
+}
+
+// Print the blocking pre-start migrations to stdout. They run inside
+// Application::start() and can take minutes on a large index; a daemon that
+// prints nothing for that long looks wedged. Only the sync migrations are drawn
+// — the background ones report through the same signal, but they run while the
+// daemon is serving and would scribble over its regular output.
+static void reportMigrationsToConsole(rats::app::Application* application)
+{
+    auto* migrations = application->migrations();
+    if (!migrations)
+        return;
+
+    struct DrawState {
+        bool active = false;
+        int lastPercent = -1;
+    };
+    auto state = std::make_shared<DrawState>();
+
+    QObject::connect(migrations, &rats::service::MigrationService::syncMigrationStarted, application,
+        [state](const QString&, const QString& description) {
+            state->active = true;
+            state->lastPercent = -1;
+            std::cout << "Data migration: " << description.toStdString() << std::endl;
+        });
+
+    QObject::connect(migrations, &rats::service::MigrationService::migrationProgress, application,
+        [state](const QString&, qint64 current, qint64 total) {
+            if (!state->active || total <= 0)
+                return;
+            const int percent = static_cast<int>((qMin(current, total) * 100) / total);
+            if (percent == state->lastPercent)
+                return;
+            state->lastPercent = percent;
+            constexpr int kBarWidth = 30;
+            const int filled = percent * kBarWidth / 100;
+            std::cout << "\r  [" << std::string(filled, '#') << std::string(kBarWidth - filled, '.') << "] " << percent
+                      << "%  " << current << '/' << total << "   " << std::flush;
+        });
+
+    QObject::connect(migrations, &rats::service::MigrationService::syncMigrationsFinished, application, [state]() {
+        if (state->lastPercent >= 0)
+            std::cout << std::endl;
+        state->active = false;
+        std::cout << "Data migration finished." << std::endl;
+    });
 }
 
 // Console mode on the new rats:: architecture: build the composition root,
@@ -155,6 +222,7 @@ static int runConsoleApplication(QCoreApplication& app, rats::app::Application::
     std::signal(SIGTERM, signalHandler);
 
     auto application = std::make_unique<rats::app::Application>(std::move(options));
+    reportMigrationsToConsole(application.get());
     if (!application->start()) {
         qCritical() << "Failed to start application";
         return 1;
@@ -199,9 +267,13 @@ int main(int argc, char* argv[])
     QCommandLineOption maxPeersOption(QStringList() << "m" << "max-peers", QStringLiteral("Max P2P connections"), "n");
     QCommandLineOption spiderOption(QStringList() << "s" << "spider", QStringLiteral("Force-enable the DHT spider"));
     QCommandLineOption webuiDirOption(QStringList() << "w" << "webui-dir", QStringLiteral("Web UI directory"), "path");
+    QCommandLineOption shareDbOption(QStringList() << "share-db",
+        QStringLiteral("Serve the whole database to peers that ask: on|off "
+                       "(overrides the databaseSharing config key for this run)"),
+        "on|off");
     QCommandLineParser parser;
-    addCommonOptions(parser, portOption, dhtPortOption, dataDirOption, maxPeersOption, spiderOption, consoleOption, webuiDirOption);
-    parser.addOption(webuiDirOption);
+    addCommonOptions(parser, portOption, dhtPortOption, dataDirOption, maxPeersOption, spiderOption, consoleOption,
+        webuiDirOption, shareDbOption);
     parser.process(*qapp);
 
     const QString dataDir = resolveDataDirectory(parser, dataDirOption);
@@ -209,6 +281,19 @@ int main(int argc, char* argv[])
         qCritical() << "Failed to create data directory:" << dataDir;
         return 1;
     }
+    // Refuse to run twice on one data directory (shared Manticore, RT tables and
+    // rats.json). Must precede configureLogging(): log rotation on startup would
+    // otherwise roll the running instance's log file out from under it.
+    rats::bootstrap::SingleInstanceGuard instanceGuard(dataDir);
+    if (!instanceGuard.tryAcquire()) {
+        const QString holder = instanceGuard.runningInstanceInfo();
+        qInfo().noquote() << QStringLiteral("Rats Search is already running on %1%2 - activating it")
+                                 .arg(dataDir, holder.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(holder));
+        if (!instanceGuard.notifyRunningInstance())
+            qWarning() << "Could not reach the running instance (it may still be starting up)";
+        return 0;
+    }
+
     migrateLegacyDatabase(dataDir); // one-time v1.x -> v2.0 import
     configureLogging(dataDir);
 
@@ -220,18 +305,33 @@ int main(int argc, char* argv[])
     options.maxPeers = parser.isSet(maxPeersOption) ? parser.value(maxPeersOption).toInt() : 0;
     options.forceSpider = parser.isSet(spiderOption);
     options.webuiDir = parser.isSet(webuiDirOption) ? parser.value(webuiDirOption) : dataDir + "/webui";
+    if (parser.isSet(shareDbOption)) {
+        options.shareDatabase = parseBoolOption(parser.value(shareDbOption));
+        if (!options.shareDatabase) {
+            qCritical() << "Invalid --share-db value:" << parser.value(shareDbOption) << "- expected on or off";
+            return 1;
+        }
+    }
 
     if (consoleMode)
         return runConsoleApplication(*qapp, std::move(options));
 
     // ---- GUI mode --------------------------------------------------------
     auto application = std::make_unique<rats::app::Application>(std::move(options));
+    // Blocking pre-start migrations run inside start(), before MainWindow exists
+    // and before the event loop is entered — the splash draws itself from inside
+    // that call, and stays hidden when there is no migration to run.
+    MigrationProgressWindow migrationSplash(application->migrations(), application->config()->darkMode());
     if (!application->start()) {
         qCritical() << "Failed to start application";
         return 1;
     }
 
     MainWindow window(application.get());
+    // A second launch is the user asking for the window, even when this instance
+    // is sitting minimized in the tray.
+    QObject::connect(&instanceGuard, &rats::bootstrap::SingleInstanceGuard::secondInstanceStarted, &window,
+        &MainWindow::bringToFront);
     if (!application->config()->startMinimized())
         window.show();
 

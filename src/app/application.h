@@ -4,10 +4,12 @@
 #include <QObject>
 #include <QString>
 #include <memory>
+#include <optional>
 
 namespace rats::app {
 class ConfigStore;
 class FavoritesStore;
+class SearchHistoryStore;
 } // namespace rats::app
 namespace rats::data {
 class TorrentRepository;
@@ -33,6 +35,7 @@ class TorrentExporter;
 class FeedService;
 class VotingService;
 class ReplicationService;
+class DatabaseSyncService;
 class TrackerService;
 class PeerRegistry;
 class UpdateService;
@@ -61,6 +64,11 @@ public:
         int dhtPort = 0;
         int maxPeers = 0;
         bool forceSpider = false;
+        // Whole-database sharing (--share-db). Unset means "use the stored
+        // databaseSharing value"; a value overrides it for this run, including
+        // across later config changes — a daemon started with --share-db=off
+        // must not start serving because something wrote the config key.
+        std::optional<bool> shareDatabase;
     };
 
     explicit Application(Options options, QObject* parent = nullptr);
@@ -80,6 +88,7 @@ public:
     // (database, transport) only after start().
     ConfigStore* config() const;
     FavoritesStore* favorites() const;
+    SearchHistoryStore* searchHistory() const;
     data::TorrentRepository* torrents() const;
     net::P2PTransport* transport() const;
     net::TorrentEngine* engine() const;
@@ -92,6 +101,7 @@ public:
     service::FeedService* feed() const;
     service::VotingService* voting() const;
     service::ReplicationService* replication() const;
+    service::DatabaseSyncService* databaseSync() const;
     service::TrackerService* trackers() const;
     service::PeerRegistry* peers() const;
     service::UpdateService* updates() const;

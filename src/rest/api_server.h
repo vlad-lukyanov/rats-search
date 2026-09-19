@@ -52,6 +52,11 @@ public:
     bool start(int httpPort = 8095, int wsPort = -1);
     void stop();
 
+    int httpPort() const { return httpPort_; }
+
+    // Handle a static file request (used by tests and internal dispatch).
+    QByteArray handleStaticFile(const QString& path) const;
+
     // Set webui directory for static file serving
     void setWebuiDir(const QString& dir);
 
@@ -66,7 +71,6 @@ private:
     QByteArray handleHealthz() const;
     QByteArray handleReadyz() const;
     QByteArray handleMetrics() const;
-    QByteArray handleStaticFile(const QString& path) const;
 
     void onHttpReadyRead(QTcpSocket* socket);
     void dispatchHttp(QTcpSocket* socket, const QString& method, const QJsonObject& params);

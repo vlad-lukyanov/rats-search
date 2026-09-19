@@ -20,7 +20,8 @@ public:
     // Custom data roles, read by TorrentItemDelegate.
     enum DataRole {
         ContentTypeRole = Qt::UserRole + 1, // domain::ContentType id
-        MatchingPathsRole = Qt::UserRole + 2 // QStringList of highlighted file paths
+        MatchingPathsRole = Qt::UserRole + 2, // QStringList of highlighted file paths
+        RemoteRole = Qt::UserRole + 3 // true if the hit came from a peer, not the local index
     };
 
     explicit SearchResultModel(QObject* parent = nullptr);
@@ -44,6 +45,9 @@ public:
 
     // Access methods
     rats::domain::Torrent getTorrent(int row) const;
+    // Full hit including remote provenance (source peer), needed to fetch a
+    // remote torrent's file list on demand.
+    rats::domain::SearchHit getHit(int row) const;
     int resultCount() const { return results_.size(); }
 
 private:

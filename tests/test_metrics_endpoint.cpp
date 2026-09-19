@@ -1,5 +1,6 @@
 #include <QtTest>
-#include <QTcpSocket>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -19,7 +20,7 @@ private slots:
     void testMetricsContainsRequiredMetrics();
 
 private:
-    QByteArray sendRequest(const QString& path);
+    QByteArray get(const QString& path);
 
     std::unique_ptr<rats::rest::ApiServer> server;
     int port = 0;
@@ -28,7 +29,7 @@ private:
 void TestMetricsEndpoint::initTestCase()
 {
     server = std::make_unique<rats::rest::ApiServer>(nullptr);
-    QVERIFY(server->start(0));
+    QVERIFY(server->start(18097));
     port = server->httpPort();
     QVERIFY(port > 0);
 }
@@ -40,42 +41,25 @@ void TestMetricsEndpoint::cleanupTestCase()
     }
 }
 
-QByteArray TestMetricsEndpoint::sendRequest(const QString& path)
+QByteArray TestMetricsEndpoint::get(const QString& path)
 {
-    QTcpSocket socket;
-    socket.connectToHost("127.0.0.1", port);
+    QNetworkAccessManager nam;
+    QNetworkRequest req(QUrl(QStringLiteral("http://127.0.0.1:%1%2").arg(port).arg(path)));
+    QNetworkReply* reply = nam.get(req);
 
-    if (!socket.waitForConnected(5000)) {
-        return QByteArray();
+    QSignalSpy spy(reply, &QNetworkReply::finished);
+    bool ok = spy.wait(5000);
+    QByteArray body;
+    if (ok) {
+        body = reply->readAll();
     }
-
-    QByteArray request = "GET " + path.toUtf8() + " HTTP/1.1\r\n"
-                        "Host: localhost:" + QByteArray::number(port) + "\r\n"
-                        "Connection: close\r\n"
-                        "\r\n";
-
-    socket.write(request);
-
-    if (!socket.waitForReadyRead(5000)) {
-        return QByteArray();
-    }
-
-    QByteArray response;
-    while (socket.waitForReadyRead(1000)) {
-        response.append(socket.readAll());
-    }
-    response.append(socket.readAll());
-
-    int bodyStart = response.indexOf("\r\n\r\n");
-    if (bodyStart >= 0) {
-        return response.mid(bodyStart + 4);
-    }
-    return response;
+    reply->deleteLater();
+    return body;
 }
 
 void TestMetricsEndpoint::testHealthzEndpoint()
 {
-    QByteArray body = sendRequest("/healthz");
+    QByteArray body = get("/healthz");
     QVERIFY(!body.isEmpty());
 
     QJsonDocument doc = QJsonDocument::fromJson(body);
@@ -89,7 +73,7 @@ void TestMetricsEndpoint::testHealthzEndpoint()
 
 void TestMetricsEndpoint::testReadyzEndpoint()
 {
-    QByteArray body = sendRequest("/readyz");
+    QByteArray body = get("/readyz");
     QVERIFY(!body.isEmpty());
 
     QJsonDocument doc = QJsonDocument::fromJson(body);
@@ -106,7 +90,7 @@ void TestMetricsEndpoint::testReadyzEndpoint()
 
 void TestMetricsEndpoint::testMetricsEndpoint()
 {
-    QByteArray body = sendRequest("/metrics");
+    QByteArray body = get("/metrics");
     QVERIFY(!body.isEmpty());
 
     QString bodyStr = QString::fromUtf8(body);
@@ -116,7 +100,7 @@ void TestMetricsEndpoint::testMetricsEndpoint()
 
 void TestMetricsEndpoint::testMetricsContainsRequiredMetrics()
 {
-    QByteArray body = sendRequest("/metrics");
+    QByteArray body = get("/metrics");
     QVERIFY(!body.isEmpty());
 
     QString bodyStr = QString::fromUtf8(body);

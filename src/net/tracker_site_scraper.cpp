@@ -6,6 +6,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QUrl>
 
 namespace rats::net {
@@ -31,16 +32,50 @@ const QVector<TrackerSiteScraper::Strategy> TrackerSiteScraper::kStrategies = {
 TrackerSiteScraper::TrackerSiteScraper(QObject* parent)
     : QObject(parent), networkManager_(new QNetworkAccessManager(this))
 {
+    queueTimer_ = new QTimer(this);
+    queueTimer_->setInterval(kQueuePollIntervalMs);
+    connect(queueTimer_, &QTimer::timeout, this, &TrackerSiteScraper::processQueue);
 }
 
-TrackerSiteScraper::~TrackerSiteScraper() = default;
+TrackerSiteScraper::~TrackerSiteScraper()
+{
+    stop();
+}
 
 // ============================================================================
 // Public entry point
 // ============================================================================
 
+void TrackerSiteScraper::stop()
+{
+    stopping_.store(true);
+
+    // Stop draining and drop anything still queued — those scrapes never started,
+    // so there is no reply to abort and no slot to free for them.
+    if (queueTimer_) {
+        queueTimer_->stop();
+    }
+    {
+        QMutexLocker locker(&queueMutex_);
+        pendingQueue_.clear();
+    }
+
+    // Abort every outstanding reply so none lingers up to the 20 s transfer
+    // timeout during shutdown. Each reply's finished() handler still runs (with
+    // an error), which cleans up its pending-scrape bookkeeping. Replies are
+    // parented to the manager, so findChildren locates them all.
+    const QList<QNetworkReply*> replies = networkManager_->findChildren<QNetworkReply*>();
+    for (QNetworkReply* reply : replies) {
+        reply->abort();
+    }
+}
+
 void TrackerSiteScraper::scrape(const QString& infoHash, const QString& name)
 {
+    if (stopping_.load()) {
+        return; // shutting down — accept no new work
+    }
+
     if (infoHash.length() != kInfoHashHexLength) {
         return;
     }
@@ -58,6 +93,28 @@ void TrackerSiteScraper::scrape(const QString& infoHash, const QString& name)
         recentChecks_[infoHash] = QDateTime::currentDateTime();
     }
 
+    // Enforce the concurrency cap: start now if a slot is free, otherwise queue
+    // for the drain timer. The hash is already marked in recentChecks_ above, so
+    // it cannot be enqueued twice within the cooldown window.
+    {
+        QMutexLocker locker(&queueMutex_);
+        if (activeRequests_ >= kMaxConcurrent) {
+            pendingQueue_.enqueue({ infoHash, name });
+            qDebug() << "TrackerSiteScraper: queued" << infoHash.left(8) << "- active:" << activeRequests_
+                     << "queued:" << pendingQueue_.size();
+            if (queueTimer_ && !queueTimer_->isActive()) {
+                queueTimer_->start();
+            }
+            return;
+        }
+        activeRequests_++;
+    }
+
+    startScrape(infoHash, name);
+}
+
+void TrackerSiteScraper::startScrape(const QString& infoHash, const QString& name)
+{
     // Register the pending scrape. The number of results we wait on is derived
     // from the strategy list, not a hardcoded STRATEGY_COUNT.
     {
@@ -73,6 +130,30 @@ void TrackerSiteScraper::scrape(const QString& infoHash, const QString& name)
     // Launch every strategy in parallel.
     for (const Strategy strategy : kStrategies) {
         (this->*strategy)(infoHash);
+    }
+}
+
+void TrackerSiteScraper::processQueue()
+{
+    if (stopping_.load()) {
+        return;
+    }
+
+    QMutexLocker locker(&queueMutex_);
+
+    // Drain as many queued scrapes as the concurrency cap allows.
+    while (!pendingQueue_.isEmpty() && activeRequests_ < kMaxConcurrent) {
+        PendingRequest req = pendingQueue_.dequeue();
+        activeRequests_++;
+
+        // Release the lock while kicking off the scrape (it launches network I/O).
+        locker.unlock();
+        startScrape(req.infoHash, req.name);
+        locker.relock();
+    }
+
+    if (pendingQueue_.isEmpty() && queueTimer_) {
+        queueTimer_->stop();
     }
 }
 
@@ -266,6 +347,14 @@ void TrackerSiteScraper::scrapeNyaa(const QString& hash)
 
 void TrackerSiteScraper::scrapeNyaaViewPage(const QString& hash, const QString& viewUrl)
 {
+    if (stopping_.load()) {
+        // Don't chain a fresh request during shutdown; close out the strategy.
+        TrackerSiteInfo info;
+        info.trackerName = "nyaa";
+        onStrategyComplete(hash, info);
+        return;
+    }
+
     QUrl url(viewUrl);
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, kUserAgent);
@@ -478,6 +567,15 @@ void TrackerSiteScraper::checkAllComplete(const QString& hash)
 
     pendingScrapes_.erase(it);
     locker.unlock();
+
+    // This hash is done — free its concurrency slot and let queued scrapes start.
+    {
+        QMutexLocker qlock(&queueMutex_);
+        if (activeRequests_ > 0) {
+            activeRequests_--;
+        }
+    }
+    processQueue();
 
     // Only emit when at least one tracker produced data.
     if (!trackers.isEmpty()) {

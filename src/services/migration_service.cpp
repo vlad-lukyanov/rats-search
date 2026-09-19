@@ -165,6 +165,21 @@ void MigrationService::registerMigrations()
         [this] { removeUnknownTorrents(); },
     });
 
+    // v2.2.8 - Re-key torrents and files from the sequential row id to one
+    // derived from the infohash (blocking). Everything Rats looks up, it looks up
+    // by hash, and `hash` is a plain string attribute with no index behind it, so
+    // every such lookup used to scan the whole table. Must run before any service
+    // starts: a lookup cannot find a row that still carries a counter id.
+    registeredMigrations_.append({
+        "v2.2.8_sync_derive_row_ids",
+        "2.0.0",
+        "",
+        "Re-key the index by infohash",
+        true,
+        [this] { return syncDeriveRowIds(); },
+        nullptr,
+    });
+
     // v2.0.19 - Update spider walkInterval to the new default (100ms). The old
     // default of 5ms was too aggressive; bump existing configs.
     registeredMigrations_.append({
@@ -299,6 +314,7 @@ bool MigrationService::runSyncMigrations()
     qInfo() << "[Migration] running synchronous migrations...";
 
     bool allSuccess = true;
+    bool anyRan = false;
 
     for (const auto& migration : registeredMigrations_) {
         if (!migration.isSync) {
@@ -316,6 +332,20 @@ bool MigrationService::runSyncMigrations()
 
         qInfo() << "[Migration] running sync:" << migration.id << "-" << migration.description;
 
+        // Publish what is about to block startup before it starts blocking:
+        // a front-end connected to syncMigrationStarted gets to put its
+        // progress window on screen while the body still reports 0 of 0.
+        {
+            QMutexLocker locker(&stateMutex_);
+            currentProgress_.migrationId = migration.id;
+            currentProgress_.description = migration.description;
+            currentProgress_.current = 0;
+            currentProgress_.total = 0;
+            currentProgress_.isRunning = true;
+        }
+        anyRan = true;
+        emit syncMigrationStarted(migration.id, migration.description);
+
         const bool success = migration.syncBody ? migration.syncBody() : false;
 
         if (success) {
@@ -328,10 +358,29 @@ bool MigrationService::runSyncMigrations()
         }
     }
 
+    if (anyRan) {
+        {
+            QMutexLocker locker(&stateMutex_);
+            currentProgress_.isRunning = false;
+        }
+        emit syncMigrationsFinished();
+    }
+
     if (allSuccess) {
         qInfo() << "[Migration] all sync migrations completed successfully";
     }
     return allSuccess;
+}
+
+void MigrationService::reportProgress(const QString& migrationId, qint64 current, qint64 total)
+{
+    {
+        QMutexLocker locker(&stateMutex_);
+        currentProgress_.migrationId = migrationId;
+        currentProgress_.current = current;
+        currentProgress_.total = total;
+    }
+    emit migrationProgress(migrationId, current, total);
 }
 
 bool MigrationService::syncCleanupFeedStorage()
@@ -361,6 +410,94 @@ bool MigrationService::syncCleanupFeedStorage()
         qInfo() << "[Migration] storage folder does not exist, skipping";
     }
 
+    return true;
+}
+
+bool MigrationService::syncDeriveRowIds()
+{
+    if (!repository_) {
+        qWarning() << "[Migration] repository not available";
+        return false;
+    }
+
+    // Both tables get the same treatment; `files` carries its own hash column, so
+    // neither pass has to consult the other.
+    const QStringList tables { QStringLiteral("torrents"), QStringLiteral("files") };
+    constexpr int kPageSize = 500;
+    const QString kId = QStringLiteral("v2.2.8_sync_derive_row_ids");
+
+    // Row counts up front, so the progress a front-end shows is a fraction of the
+    // whole sweep rather than a counter climbing towards an unknown end. It is a
+    // snapshot: rows dropped along the way make the final count fall a little
+    // short of it, which is why the reported value is clamped below.
+    qint64 totalRows = 0;
+    if (db_) {
+        for (const QString& table : tables)
+            totalRows += db_->count(table);
+    }
+    qint64 processedRows = 0;
+    reportProgress(kId, 0, totalRows);
+
+    for (const QString& table : tables) {
+        qint64 cursor = 0;
+        qint64 scanned = 0;
+        qint64 rewritten = 0;
+        qint64 dropped = 0;
+        qint64 lastLogged = 0;
+
+        qInfo() << "[Migration] v2.2.8: re-keying" << table << "by infohash...";
+
+        for (;;) {
+            const data::TorrentRepository::RowIdMigrationPage page
+                = repository_->migrateRowIdPage(table, cursor, kPageSize);
+            if (page.failed) {
+                // Bail out without marking the migration completed. Reporting
+                // success here would strand every row past this point under a
+                // counter id: invisible to a lookup by hash, re-indexed by the
+                // crawler as a second copy, and never retried.
+                qWarning() << "[Migration] v2.2.8: failed while re-keying" << table << "past id" << cursor << "after"
+                           << scanned << "rows - will resume on next start";
+                return false;
+            }
+            if (page.finished)
+                break;
+
+            scanned += page.scanned;
+            rewritten += page.rewritten;
+            dropped += page.dropped;
+
+            // Ticked per page, not per log line: this migration blocks startup,
+            // so the front-end showing it needs an update often enough to look
+            // alive (a page is 500 rows of database work — the signal costs
+            // nothing next to it).
+            processedRows += page.scanned;
+            reportProgress(kId, qMin(processedRows, totalRows), totalRows);
+
+            // A page that read rows but moved none is the tail of the sweep,
+            // where everything is already re-keyed — still worth walking to the
+            // end, since correctness must not rest on new ids always sorting
+            // after old ones.
+            if (scanned - lastLogged >= 50000) {
+                lastLogged = scanned;
+                qInfo() << "[Migration] v2.2.8:" << table << "-" << scanned << "scanned," << rewritten << "re-keyed";
+            }
+
+            if (stopRequested_.load()) {
+                // Interrupted, but nothing is half-written: every page either
+                // committed or did not. The next start resumes from the top and
+                // skips whatever this run already moved.
+                qWarning() << "[Migration] v2.2.8: stopped during" << table << "- will resume on next start";
+                return false;
+            }
+        }
+
+        qInfo() << "[Migration] v2.2.8:" << table << "done -" << scanned << "scanned," << rewritten << "re-keyed,"
+                << dropped << "dropped";
+    }
+
+    // Dropped rows change the counters, and the statistics were primed before
+    // this ran.
+    repository_->primeFromDatabase();
     return true;
 }
 

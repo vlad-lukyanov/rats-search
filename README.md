@@ -20,6 +20,7 @@ A high-performance BitTorrent search program for desktop and server. It collects
 * Collection filters (regex filters, adult filters)
 * Tracker peers scan support
 * Collects only statistical information and doesn't save any internal torrent data
+* Database export/import: dump the whole index to a portable `.ratsdb` file and merge it back (resumable)
 
 ### P2P Network & Security
 * Supports its own P2P protocol for additional data transfer (search between Rats clients, descriptions/votes transfer, etc.)
@@ -29,6 +30,7 @@ A high-performance BitTorrent search program for desktop and server. It collects
 * mDNS Discovery for automatic local network peer discovery
 * NAT Traversal with STUN/ICE support for connecting through firewalls
 * GossipSub messaging for scalable publish-subscribe protocol
+* Database transfer between clients: download a peer's whole index over P2P (opt-in sharing on the serving side)
 * Supports torrent rating (voting)
 * Description association from trackers
 * Top list (most common and popular torrents)
@@ -43,7 +45,7 @@ A high-performance BitTorrent search program for desktop and server. It collects
 * Native C++/Qt application — fast, responsive, and lightweight
 * Modern dark UI with customizable settings
 * System tray support with minimize/close to tray
-* Translations: English, Russian, Ukrainian, Chinese, Spanish, French, German, Japanese, Portuguese, Italian, Hindi
+* Translations: English, Russian, Japanese, Chinese, Korean, German, Spanish, French
 * Console mode for headless server operation
 * REST & WebSocket API for custom clients and integrations
 
@@ -251,6 +253,9 @@ After first launch, a configuration file `rats.json` will be created in the data
 | `restApi` | Enable/disable REST API |
 | `indexer` | Enable/disable DHT indexer |
 | `upnp` | Enable/disable UPnP/NAT-PMP port mapping (config-file only) |
+| `holePunch` | Enable/disable NAT hole punching, the fallback for networks where port mapping fails; also relays other peers' rendezvous (config-file only) |
+| `relay` | Enable/disable relayed circuits — reaching a peer through a third node both ends already hold, the fallback for peers no punch can reach (config-file only) |
+| `relayServe` | Carry *other* peers' relayed circuits. Off by default: it spends real uplink on somebody else's traffic (config-file only) |
 
 ## API
 
@@ -319,7 +324,7 @@ Access the web interface at: http://localhost:8095
 
 ## Support & Donation
 
-Bitcoin: bc1qsm5akf0gf2jnnxvjpf6nn3cd2p29yt3svxva3g
+Bitcoin: bc1pmzppgyj3qlveeqzpuza3j079wjskdf56nk7f2pd7mqc6fl53yr8su93kpx
 
 Subscribe to autor (GitHub donations): https://github.com/sponsors/DEgITx
 

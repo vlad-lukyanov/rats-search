@@ -4,6 +4,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QProgressBar>
@@ -24,7 +25,7 @@ class Application;
  * - Network: ports, P2P connections, replication, REST API
  * - Indexer: DHT indexer, trackers, spider performance
  * - Filters: name/regex, size, content type filters
- * - Storage: download path, data directory, database cleanup
+ * - Storage: download path, data directory, log size, database cleanup
  */
 class SettingsDialog : public QDialog {
     Q_OBJECT
@@ -60,6 +61,12 @@ private:
     void installScrollGuard(QWidget* container);
     void loadSettings();
     void saveSettings();
+    void updateSearchHistoryButton();
+    // The content-type checkboxes as the CSV the config stores ("" = all).
+    QString selectedContentTypes() const;
+    // The filter widgets as they are right now — sent to `torrent.cleanup` so
+    // Check/Clean judge the rules being edited, not the last saved ones.
+    QJsonObject currentFilters() const;
 
     rats::app::Application* app_;
     QString dataDirectory_;
@@ -77,6 +84,8 @@ private:
     QCheckBox* autoStartCheck_;
     QCheckBox* darkModeCheck_;
     QCheckBox* checkUpdatesCheck_;
+    QCheckBox* searchHistoryCheck_;
+    QPushButton* clearSearchHistoryButton_;
 
     // Network settings
     QSpinBox* p2pPortSpin_;
@@ -88,6 +97,7 @@ private:
     QSpinBox* p2pConnectionsSpin_;
     QCheckBox* p2pReplicationCheck_;
     QCheckBox* p2pReplicationServerCheck_;
+    QCheckBox* databaseSharingCheck_;
 
     // Indexer settings
     QCheckBox* indexerCheck_;
@@ -125,6 +135,9 @@ private:
 
     // Downloads
     QLineEdit* downloadPathEdit_;
+
+    // Logging
+    QSpinBox* logMaxSizeSpin_;
 };
 
 #endif // SETTINGSDIALOG_H

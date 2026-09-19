@@ -1,13 +1,16 @@
 #include "settingsdialog.h"
 #include "app/application.h"
 #include "app/config_store.h"
+#include "app/search_history_store.h"
 #include "app/translation_manager.h"
 #include "autostartmanager.h"
+#include "common/logging.h"
 #include "rest/api_router.h"
 #include <QApplication>
 
 #include <QApplication>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -175,6 +178,33 @@ QWidget* SettingsDialog::createGeneralTab()
 
     tabLayout->addWidget(startupGroup);
 
+    // --- Search ---
+    QGroupBox* searchGroup = new QGroupBox(tr("Search"));
+    QFormLayout* searchLayout = new QFormLayout(searchGroup);
+    searchLayout->setSpacing(10);
+
+    searchHistoryCheck_ = new QCheckBox(tr("Remember search history"));
+    searchHistoryCheck_->setToolTip(
+        tr("Store recent search queries and offer them in the search field. Turning this off stops new queries from "
+           "being recorded; already stored ones are kept until you clear them."));
+    searchLayout->addRow(searchHistoryCheck_);
+
+    clearSearchHistoryButton_ = new QPushButton(tr("Clear search history"));
+    // Neutral, like the other in-place actions on this page: the accent is for
+    // the dialog's own accept button, not for a side action.
+    clearSearchHistoryButton_->setObjectName("secondaryButton");
+    // Clearing is immediate and independent of Save — it is an action, not a
+    // setting, and there is nothing to roll back on Cancel.
+    connect(clearSearchHistoryButton_, &QPushButton::clicked, this, [this]() {
+        if (!app_ || !app_->searchHistory())
+            return;
+        app_->searchHistory()->clear();
+        updateSearchHistoryButton();
+    });
+    searchLayout->addRow(clearSearchHistoryButton_);
+
+    tabLayout->addWidget(searchGroup);
+
     // --- Updates ---
     QGroupBox* updatesGroup = new QGroupBox(tr("Updates"));
     QFormLayout* updatesLayout = new QFormLayout(updatesGroup);
@@ -238,6 +268,13 @@ QWidget* SettingsDialog::createNetworkTab()
     p2pReplicationServerCheck_ = new QCheckBox(tr("Enable P2P replication server"));
     p2pReplicationServerCheck_->setToolTip(tr("Serve database to other peers"));
     p2pLayout->addRow(p2pReplicationServerCheck_);
+
+    databaseSharingCheck_ = new QCheckBox(tr("Let peers download my whole database"));
+    databaseSharingCheck_->setToolTip(
+        tr("Answer a peer's request for a full copy of your index. Producing one exports the "
+           "whole database and uploads it, which can take a long time and a lot of bandwidth. "
+           "Turning this off also hides you from other users' peer lists."));
+    p2pLayout->addRow(databaseSharingCheck_);
 
     tabLayout->addWidget(p2pGroup);
 
@@ -490,6 +527,29 @@ QWidget* SettingsDialog::createStorageTab()
 
     tabLayout->addWidget(dbGroup);
 
+    // --- Logging ---
+    QGroupBox* logGroup = new QGroupBox(tr("Logging"));
+    QFormLayout* logLayout = new QFormLayout(logGroup);
+    logLayout->setSpacing(10);
+
+    logMaxSizeSpin_ = new QSpinBox();
+    logMaxSizeSpin_->setRange(rats::common::kMinLogMaxSizeMb, rats::common::kMaxLogMaxSizeMb);
+    logMaxSizeSpin_->setSingleStep(10);
+    logMaxSizeSpin_->setSuffix(tr(" MB"));
+    logMaxSizeSpin_->setToolTip(tr("Total disk space used by the log file and its rotated copies"));
+    logLayout->addRow(tr("Maximum log size:"), logMaxSizeSpin_);
+
+    QLabel* logHint
+        = new QLabel(tr("* Shared by %1 and its rotated copies (.1 - .%2). Once the limit is reached the oldest "
+                        "entries are dropped. Applies immediately.")
+                .arg(QDir::toNativeSeparators(dataDirectory_ + QStringLiteral("/rats-search.log")))
+                .arg(rats::common::kLogRetentionCount));
+    logHint->setObjectName("hintLabel");
+    logHint->setWordWrap(true);
+    logLayout->addRow(logHint);
+
+    tabLayout->addWidget(logGroup);
+
     // --- Database Cleanup ---
     QGroupBox* cleanupBox = new QGroupBox(tr("Database Cleanup"));
     QVBoxLayout* cleanupLayout = new QVBoxLayout(cleanupBox);
@@ -530,6 +590,16 @@ QWidget* SettingsDialog::createStorageTab()
     return wrapInScrollArea(tab);
 }
 
+// Label the clear button with how many queries are stored, and disable it when
+// there is nothing to clear.
+void SettingsDialog::updateSearchHistoryButton()
+{
+    const int count = app_ && app_->searchHistory() ? app_->searchHistory()->size() : 0;
+    clearSearchHistoryButton_->setEnabled(count > 0);
+    clearSearchHistoryButton_->setText(
+        count > 0 ? tr("Clear search history (%1)").arg(count) : tr("Clear search history"));
+}
+
 // =============================================================================
 // Load / Save
 // =============================================================================
@@ -554,6 +624,8 @@ void SettingsDialog::loadSettings()
     minimizeToTrayCheck_->setChecked(config_->trayOnMinimize());
     closeToTrayCheck_->setChecked(config_->trayOnClose());
     checkUpdatesCheck_->setChecked(config_->checkUpdatesOnStartup());
+    searchHistoryCheck_->setChecked(config_->searchHistoryEnabled());
+    updateSearchHistoryButton();
 
     // Network
     p2pPortSpin_->setValue(config_->p2pPort());
@@ -563,6 +635,7 @@ void SettingsDialog::loadSettings()
     p2pConnectionsSpin_->setValue(config_->p2pConnections());
     p2pReplicationCheck_->setChecked(config_->p2pReplication());
     p2pReplicationServerCheck_->setChecked(config_->p2pReplicationServer());
+    databaseSharingCheck_->setChecked(config_->databaseSharing());
 
     // Indexer
     indexerCheck_->setChecked(config_->indexerEnabled());
@@ -594,6 +667,7 @@ void SettingsDialog::loadSettings()
 
     // Storage
     downloadPathEdit_->setText(config_->downloadPath());
+    logMaxSizeSpin_->setValue(config_->logMaxSizeMb());
 
     // Database - QSettings is the source of truth for the data directory (it has
     // to be readable before rats.json, which lives inside it, can be loaded).
@@ -627,6 +701,7 @@ void SettingsDialog::saveSettings()
     config_->setTrayOnMinimize(minimizeToTrayCheck_->isChecked());
     config_->setTrayOnClose(closeToTrayCheck_->isChecked());
     config_->setCheckUpdatesOnStartup(checkUpdatesCheck_->isChecked());
+    config_->setSearchHistoryEnabled(searchHistoryCheck_->isChecked());
 
     // Autostart lives in the OS (registry / .desktop / launch agent), which is its
     // only source of truth — loadSettings() reads it back from AutoStartManager.
@@ -645,6 +720,7 @@ void SettingsDialog::saveSettings()
     config_->setP2pConnections(p2pConnectionsSpin_->value());
     config_->setP2pReplication(p2pReplicationCheck_->isChecked());
     config_->setP2pReplicationServer(p2pReplicationServerCheck_->isChecked());
+    config_->setDatabaseSharing(databaseSharingCheck_->isChecked());
 
     // Save Indexer
     config_->setIndexerEnabled(indexerCheck_->isChecked());
@@ -659,28 +735,9 @@ void SettingsDialog::saveSettings()
     config_->setFiltersSizeMin(static_cast<qint64>(sizeMinSpin_->value()) * 1024 * 1024);
     config_->setFiltersSizeMax(static_cast<qint64>(sizeMaxSpin_->value()) * 1024 * 1024);
 
-    // Build content type filter string
-    QStringList contentTypes;
-    if (videoCheck_->isChecked())
-        contentTypes << "video";
-    if (audioCheck_->isChecked())
-        contentTypes << "audio";
-    if (picturesCheck_->isChecked())
-        contentTypes << "pictures";
-    if (booksCheck_->isChecked())
-        contentTypes << "books";
-    if (appsCheck_->isChecked())
-        contentTypes << "application";
-    if (archivesCheck_->isChecked())
-        contentTypes << "archive";
-    if (discsCheck_->isChecked())
-        contentTypes << "disc";
+    config_->setFiltersContentType(selectedContentTypes());
 
-    if (contentTypes.size() == 7) {
-        config_->setFiltersContentType("");
-    } else {
-        config_->setFiltersContentType(contentTypes.join(","));
-    }
+    config_->setLogMaxSizeMb(logMaxSizeSpin_->value());
 
     // Save Download Path
     QString newDownloadPath = downloadPathEdit_->text();
@@ -704,6 +761,37 @@ void SettingsDialog::saveSettings()
     config_->save();
 }
 
+QString SettingsDialog::selectedContentTypes() const
+{
+    QStringList contentTypes;
+    if (videoCheck_->isChecked())
+        contentTypes << "video";
+    if (audioCheck_->isChecked())
+        contentTypes << "audio";
+    if (picturesCheck_->isChecked())
+        contentTypes << "pictures";
+    if (booksCheck_->isChecked())
+        contentTypes << "books";
+    if (appsCheck_->isChecked())
+        contentTypes << "application";
+    if (archivesCheck_->isChecked())
+        contentTypes << "archive";
+    if (discsCheck_->isChecked())
+        contentTypes << "disc";
+
+    // Every box ticked means "no type filter" — the same as none at all.
+    return contentTypes.size() == 7 ? QString() : contentTypes.join(QLatin1Char(','));
+}
+
+QJsonObject SettingsDialog::currentFilters() const
+{
+    return QJsonObject { { "maxFiles", maxFilesSpin_->value() }, { "namingRegExp", regexEdit_->text() },
+        { "namingRegExpNegative", regexNegativeCheck_->isChecked() }, { "adultFilter", adultFilterCheck_->isChecked() },
+        { "sizeMin", static_cast<double>(static_cast<qint64>(sizeMinSpin_->value()) * 1024 * 1024) },
+        { "sizeMax", static_cast<double>(static_cast<qint64>(sizeMaxSpin_->value()) * 1024 * 1024) },
+        { "contentType", selectedContentTypes() } };
+}
+
 // =============================================================================
 // Slots
 // =============================================================================
@@ -716,8 +804,8 @@ void SettingsDialog::runCleanup(bool dryRun)
     QApplication::processEvents(); // paint the status before the synchronous
                                    // sweep
 
-    app_->api()->call(
-        QStringLiteral("torrent.cleanup"), { { "dryRun", dryRun } }, [this, dryRun](const rats::Result& r) {
+    app_->api()->call(QStringLiteral("torrent.cleanup"), { { "dryRun", dryRun }, { "filters", currentFilters() } },
+        [this, dryRun](const rats::Result& r) {
             if (!r.ok()) {
                 cleanupProgress_->setText(tr("Cleanup failed: %1").arg(r.error()));
                 return;
@@ -726,8 +814,8 @@ void SettingsDialog::runCleanup(bool dryRun)
             const int matched = data["matched"].toInt();
             const int scanned = data["scanned"].toInt();
             cleanupProgress_->setText(dryRun
-                    ? tr("%1 of %2 torrents don't match the current filters.").arg(matched).arg(scanned)
-                    : tr("Removed %1 torrents that didn't match the filters.").arg(matched));
+                    ? tr("%n of %1 torrent(s) don't match the current filters.", nullptr, matched).arg(scanned)
+                    : tr("Removed %n torrent(s) that didn't match the filters.", nullptr, matched));
         });
 }
 

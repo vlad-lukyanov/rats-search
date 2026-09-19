@@ -2,7 +2,9 @@
 
 #include "app/config_store.h"
 #include "app/favorites_store.h"
+#include "app/search_history_store.h"
 #include "app/translation_manager.h"
+#include "common/logging.h"
 #include "data/database.h"
 #include "data/feed_repository.h"
 #include "data/manticore.h"
@@ -16,6 +18,7 @@
 #include "peer/peer_api.h"
 #include "rest/api_router.h"
 #include "rest/api_server.h"
+#include "services/database_sync_service.h"
 #include "services/download_service.h"
 #include "services/feed_service.h"
 #include "services/filter_policy.h"
@@ -45,6 +48,7 @@ struct Application::Private {
     // Adapters (owned, constructed in dependency order)
     std::unique_ptr<ConfigStore> config;
     std::unique_ptr<FavoritesStore> favorites;
+    std::unique_ptr<SearchHistoryStore> searchHistory;
     std::unique_ptr<data::Manticore> manticore;
     std::unique_ptr<data::Database> database;
     std::unique_ptr<data::TorrentRepository> torrents;
@@ -67,6 +71,7 @@ struct Application::Private {
     std::unique_ptr<service::P2PStore> p2pStore;
     std::unique_ptr<service::VotingService> voting;
     std::unique_ptr<service::ReplicationService> replication;
+    std::unique_ptr<service::DatabaseSyncService> databaseSync;
     std::unique_ptr<service::TrackerService> trackers;
     std::unique_ptr<service::MigrationService> migrations;
     std::unique_ptr<service::UpdateService> updates;
@@ -100,6 +105,7 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     translations.setLanguage(language);
 
     d_->favorites = std::make_unique<FavoritesStore>(dataDir);
+    d_->searchHistory = std::make_unique<SearchHistoryStore>(dataDir);
 
     // --- Data layer -------------------------------------------------------
     d_->manticore = std::make_unique<data::Manticore>(dataDir);
@@ -129,6 +135,8 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     d_->p2pStore = std::make_unique<service::P2PStore>(d_->transport.get());
     d_->voting = std::make_unique<service::VotingService>(d_->p2pStore.get(), d_->torrents.get());
     d_->replication = std::make_unique<service::ReplicationService>(d_->transport.get());
+    d_->databaseSync = std::make_unique<service::DatabaseSyncService>(
+        d_->torrents.get(), d_->indexing.get(), d_->transport.get(), dataDir, d_->options.clientVersion);
     d_->trackers
         = std::make_unique<service::TrackerService>(d_->swarmScraper.get(), d_->siteScraper.get(), d_->torrents.get());
     d_->migrations = std::make_unique<service::MigrationService>(
@@ -156,22 +164,33 @@ void Application::applyConfig()
 {
     ConfigStore* c = d_->config.get();
 
-    service::FilterSettings fs;
-    fs.maxFiles = c->filtersMaxFiles();
-    fs.sizeMin = c->filtersSizeMin();
-    fs.sizeMax = c->filtersSizeMax();
-    fs.adultFilter = c->filtersAdultFilter();
-    fs.namingRegExp = c->filtersNamingRegExp();
-    fs.namingRegExpNegative = c->filtersNamingRegExpNegative();
-    fs.contentTypeFilter = c->filtersContentType();
-    d_->filter->setSettings(fs);
+    d_->filter->setSettings(c->filterSettings());
 
     d_->downloads->setDefaultDownloadPath(c->downloadPath());
     d_->trackers->setCountScrapingEnabled(c->trackersEnabled());
     d_->trackers->setInfoScrapingEnabled(c->trackersEnabled());
     d_->replication->setEnabled(c->p2pReplication());
+    // One value drives both: what we actually do when asked, and what we tell
+    // peers we would do. They must not disagree, or peers offer us to users who
+    // will only ever get a refusal.
+    const bool shareDatabase = d_->options.shareDatabase.value_or(c->databaseSharing());
+    d_->databaseSync->setSharingEnabled(shareDatabase);
+    d_->peers->setDatabaseSharing(shareDatabase);
+    {
+        service::DatabaseSnapshot::Policy policy;
+        policy.maxAgeSecs = static_cast<qint64>(c->databaseSnapshotMaxAgeHours()) * 3600;
+        policy.maxDriftRatio = c->databaseSnapshotMaxDriftPercent() / 100.0;
+        d_->databaseSync->setSnapshotPolicy(policy);
+    }
     d_->transport->setPortMappingEnabled(c->upnpEnabled());
+    d_->transport->setHolePunchEnabled(c->holePunchEnabled());
+    d_->transport->setRelayEnabled(c->relayEnabled());
+    d_->transport->setRelayServeEnabled(c->relayServeEnabled());
     d_->crawler->setWalkInterval(c->spiderWalkInterval());
+    // Re-derives the rotation threshold, so lowering the budget starts capping
+    // the current file immediately instead of at the next launch.
+    common::applyLogSizeBudget(c->logMaxSizeMb());
+    d_->searchHistory->setEnabled(c->searchHistoryEnabled());
 
     // Reflect runtime toggles of the crawler and replication. Only act once the
     // subsystems are up (applyConfig also runs at construction, before start(),
@@ -236,9 +255,11 @@ bool Application::start()
     // Blocking pre-start migrations run before anything reads the data. These are
     // housekeeping migrations, so a failure is non-fatal — but it must not pass
     // silently (the service logs the specific migration; we log the outcome).
-    // They finish before any GUI exists, so they can't be surfaced via signals;
-    // the async migrations below run while the window is up and ARE surfaced
-    // there.
+    // They run on this thread, before any window exists: a front-end that wants
+    // to show them (MigrationProgressWindow in GUI mode, a stdout bar in console
+    // mode) connects to MigrationService::syncMigrationStarted before start() is
+    // called and pumps the event queue itself. The async migrations below run
+    // while the window is up and are surfaced in its status bar.
     if (!d_->migrations->runSyncMigrations()) {
         qWarning() << "[Application] one or more synchronous migrations failed; "
                       "continuing startup";
@@ -275,10 +296,17 @@ void Application::stop()
     qInfo() << "[Application] stopping";
 
     d_->apiServer->stop();
+    // Stop the crawler (the source of new torrents) and the tracker scrapers early
+    // so no fresh tracker requests are issued during shutdown, and in-flight
+    // announces / HTTP requests are drained rather than left blocking teardown.
+    d_->crawler->stop();
+    d_->trackers->stop();
     d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
     d_->feed->save();
     d_->replication->stop();
-    d_->crawler->stop();
+    // The sync worker reads/writes the database on its own thread; it has to be
+    // gone before Manticore is torn down under it.
+    d_->databaseSync->shutdown();
     d_->transport->stop();
     d_->manticore->stop();
 
@@ -297,6 +325,10 @@ ConfigStore* Application::config() const
 FavoritesStore* Application::favorites() const
 {
     return d_->favorites.get();
+}
+SearchHistoryStore* Application::searchHistory() const
+{
+    return d_->searchHistory.get();
 }
 data::TorrentRepository* Application::torrents() const
 {
@@ -346,6 +378,10 @@ service::VotingService* Application::voting() const
 service::ReplicationService* Application::replication() const
 {
     return d_->replication.get();
+}
+service::DatabaseSyncService* Application::databaseSync() const
+{
+    return d_->databaseSync.get();
 }
 service::TrackerService* Application::trackers() const
 {

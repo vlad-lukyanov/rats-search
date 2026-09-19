@@ -2,6 +2,7 @@
 
 #include "app/application.h"
 #include "app/config_store.h"
+#include "app/search_history_store.h"
 #include "common/infohash.h"
 #include "data/torrent_repository.h"
 #include "domain/peer.h"
@@ -10,8 +11,10 @@
 #include "net/p2p_transport.h"
 #include "net/torrent_engine.h"
 #include "peer/peer_api.h"
+#include "services/database_sync_service.h"
 #include "services/download_service.h"
 #include "services/feed_service.h"
+#include "services/filter_policy.h"
 #include "services/indexing_service.h"
 #include "services/peer_registry.h"
 #include "services/search_service.h"
@@ -32,8 +35,8 @@
 #undef emit
 #undef slots
 #undef signals
-#include "bittorrent/torrent_info.h"
-#include "subsystems/bittorrent.h"
+#include "librats/bittorrent/torrent_info.h"
+#include "librats/subsystems/bittorrent.h"
 #pragma pop_macro("signals")
 #pragma pop_macro("slots")
 #pragma pop_macro("emit")
@@ -42,7 +45,9 @@
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonValue>
+#include <QRegularExpression>
 #include <QStringList>
+#include <QTimer>
 #include <memory>
 
 namespace rats::rest {
@@ -165,6 +170,58 @@ void dhtLookup(ApiRouter* ctx, app::Application* app, const QString& hash, bool 
 #endif
 }
 
+// --- Peer torrent fetch -----------------------------------------------------
+
+// Ask a specific peer for a torrent (optionally with its file list) and answer
+// `respond` exactly once: with the peer's reply if it arrives before the
+// timeout, otherwise by falling back to the DHT lookup. This is what turns a
+// remote-only search hit into a full, locally-cloned torrent when the user opens
+// it — PeerApi already routes the incoming torrent_response through the index.
+void peerLookup(ApiRouter* ctx, app::Application* app, const QString& peerId, const QString& hash, bool includeFiles,
+    bool asArray, const ResultCallback& respond)
+{
+    peer::PeerApi* peerApi = app->peerApi();
+    if (!peerApi || peerId.isEmpty()) {
+        dhtLookup(ctx, app, hash, includeFiles, asArray, respond);
+        return;
+    }
+
+    auto done = std::make_shared<bool>(false);
+    auto conn = std::make_shared<QMetaObject::Connection>();
+    QTimer* timer = new QTimer(ctx);
+    timer->setSingleShot(true);
+
+    // Complete once: either the peer answered (deliver its payload) or we time
+    // out (fall back to the DHT). Every path disconnects and reaps the timer.
+    auto finish = [=](bool matched, const QJsonObject& payload) {
+        if (*done)
+            return;
+        *done = true;
+        QObject::disconnect(*conn);
+        timer->stop();
+        timer->deleteLater();
+
+        if (!matched) {
+            dhtLookup(ctx, app, hash, includeFiles, asArray, respond);
+            return;
+        }
+        if (asArray)
+            respond(Result::success(QJsonArray { payload }));
+        else
+            respond(Result::success(payload));
+    };
+
+    *conn = QObject::connect(
+        peerApi, &peer::PeerApi::remoteTorrentReceived, ctx, [=](const QString& h, const QJsonObject& data) {
+            if (h == hash)
+                finish(true, data);
+        });
+    QObject::connect(timer, &QTimer::timeout, ctx, [=]() { finish(false, {}); });
+
+    timer->start(15000);
+    peerApi->requestTorrent(peerId, hash, includeFiles);
+}
+
 } // namespace
 
 // ===========================================================================
@@ -222,6 +279,26 @@ void ApiRouter::wireEvents()
                     QJsonObject { { "searchId", query }, { "torrents", torrents } });
             });
     }
+    if (app_->databaseSync()) {
+        // Two lanes, two event families. databaseSync* is the local user's own
+        // operation; databaseServe* is what we are doing for other peers, which a
+        // client may display but must never treat as the user's own failure.
+        connect(app_->databaseSync(), &service::DatabaseSyncService::syncStarted, this,
+            [this](const QJsonObject& info) { emit event(QStringLiteral("databaseSyncStarted"), info); });
+        connect(app_->databaseSync(), &service::DatabaseSyncService::syncProgress, this,
+            [this](const QJsonObject& info) { emit event(QStringLiteral("databaseSyncProgress"), info); });
+        connect(app_->databaseSync(), &service::DatabaseSyncService::syncFinished, this,
+            [this](bool, const QJsonObject& summary) { emit event(QStringLiteral("databaseSyncFinished"), summary); });
+        connect(app_->databaseSync(), &service::DatabaseSyncService::serveProgress, this,
+            [this](const QJsonObject& info) { emit event(QStringLiteral("databaseServeProgress"), info); });
+        connect(app_->databaseSync(), &service::DatabaseSyncService::serveFinished, this,
+            [this](const QString& peerId, bool success, const QJsonObject& summary) {
+                QJsonObject info = summary;
+                info["peer"] = peerId;
+                info["success"] = success;
+                emit event(QStringLiteral("databaseServeFinished"), info);
+            });
+    }
 }
 
 void ApiRouter::add(const QString& name, Handler handler)
@@ -246,6 +323,11 @@ void ApiRouter::registerMethods()
     // -----------------------------------------------------------------------
     add("search.torrents", [this](const QJsonObject& params, const ResultCallback& respond) {
         const service::SearchService::Request req = buildSearchRequest(params);
+        // A torrent search through the API is a user-initiated search, so it is
+        // remembered exactly like one typed into the GUI (the store itself
+        // honours the searchHistory setting). search.files is deliberately not
+        // recorded: a client running both for one query would count it twice.
+        app_->searchHistory()->add(req.query);
         const QVector<domain::SearchHit> hits = app_->search()->searchTorrents(req);
 
         QJsonArray results;
@@ -300,6 +382,37 @@ void ApiRouter::registerMethods()
     });
 
     // -----------------------------------------------------------------------
+    // Search history
+    // -----------------------------------------------------------------------
+    add("search.history", [this](const QJsonObject& params, const ResultCallback& respond) {
+        const int limit = params["limit"].toInt(app::SearchHistoryStore::kMaxEntries);
+
+        QJsonArray results;
+        for (const app::SearchHistoryStore::Entry& entry : app_->searchHistory()->entries()) {
+            if (limit >= 0 && results.size() >= limit)
+                break;
+            results.append(QJsonObject { { "query", entry.query },
+                { "lastSearchedAt", entry.lastSearchedAt.toMSecsSinceEpoch() }, { "count", entry.count } });
+        }
+        respond(Result::success(results));
+    });
+
+    add("search.history.remove", [this](const QJsonObject& params, const ResultCallback& respond) {
+        const QString query = params["query"].toString();
+        if (query.trimmed().isEmpty()) {
+            respond(Result::failure("Missing query"));
+            return;
+        }
+        const bool removed = app_->searchHistory()->remove(query);
+        respond(Result::success(QJsonObject { { "removed", removed } }));
+    });
+
+    add("search.history.clear", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        const bool cleared = app_->searchHistory()->clear();
+        respond(Result::success(QJsonObject { { "cleared", cleared } }));
+    });
+
+    // -----------------------------------------------------------------------
     // Torrent lifecycle
     // -----------------------------------------------------------------------
     add("torrent.get", [this](const QJsonObject& params, const ResultCallback& respond) {
@@ -309,10 +422,22 @@ void ApiRouter::registerMethods()
             return;
         }
         const bool includeFiles = params["files"].toBool(false);
+        // Optional: the peer that offered this torrent in a remote search hit.
+        const QString peerId = params["peer"].toString();
 
         std::optional<domain::Torrent> torrent = app_->search()->get(hash, includeFiles);
+
+        // A file list was asked for but the local copy has none: this is a
+        // remote-only hit (search replies never carry files). Fetch the full
+        // torrent from the offering peer, then the DHT, before giving up.
+        const bool needRemoteFiles = includeFiles && (!torrent || torrent->fileList.isEmpty());
+        if (needRemoteFiles && !peerId.isEmpty()) {
+            peerLookup(this, app_, peerId, hash, includeFiles, /*asArray*/ false, respond);
+            return;
+        }
+
         if (!torrent) {
-            // Not indexed locally: try to pull metadata from the DHT.
+            // Not indexed locally and no peer to ask: try the DHT.
             dhtLookup(this, app_, hash, includeFiles, /*asArray*/ false, respond);
             return;
         }
@@ -344,7 +469,7 @@ void ApiRouter::registerMethods()
                 progress["processed"] = processed;
                 progress["removed"] = removed;
                 progress["total"] = total;
-                emit event("torrent.remove.progress", progress);
+                emit event("torrentRemoveProgress", progress);
             }
         }
 
@@ -354,29 +479,67 @@ void ApiRouter::registerMethods()
         respond(Result::success(result));
     });
 
-    // Re-apply the current filter policy across the whole index and remove
-    // torrents that no longer pass (e.g. after tightening the adult/size
-    // filters). With dryRun=true it only counts; otherwise it removes and emits
-    // progress.
+    // Re-apply the filter policy across the whole index and remove torrents that
+    // no longer pass (e.g. after tightening the adult/size filters). With
+    // dryRun=true it only counts; otherwise it removes and emits progress.
+    // An optional "filters" object overrides the stored config key by key, so
+    // the settings dialog can preview the rules the user is still editing
+    // without persisting them first.
     add("torrent.cleanup", [this](const QJsonObject& params, const ResultCallback& respond) {
         const bool dryRun = params["dryRun"].toBool(false);
+
+        service::FilterSettings fs = app_->config()->filterSettings();
+        const QJsonObject overrides = params["filters"].toObject();
+        if (!overrides.isEmpty()) {
+            if (overrides.contains("maxFiles"))
+                fs.maxFiles = overrides["maxFiles"].toInt();
+            if (overrides.contains("sizeMin"))
+                fs.sizeMin = static_cast<qint64>(overrides["sizeMin"].toDouble());
+            if (overrides.contains("sizeMax"))
+                fs.sizeMax = static_cast<qint64>(overrides["sizeMax"].toDouble());
+            if (overrides.contains("adultFilter"))
+                fs.adultFilter = overrides["adultFilter"].toBool();
+            if (overrides.contains("namingRegExp"))
+                fs.namingRegExp = overrides["namingRegExp"].toString();
+            if (overrides.contains("namingRegExpNegative"))
+                fs.namingRegExpNegative = overrides["namingRegExpNegative"].toBool();
+            if (overrides.contains("contentType"))
+                fs.contentTypeFilter = overrides["contentType"].toString();
+        }
+
+        // An unparsable pattern would silently accept every name (FilterPolicy
+        // skips an invalid regex), which reads as "the filter does nothing".
+        if (!fs.namingRegExp.isEmpty()) {
+            const QRegularExpression re(fs.namingRegExp);
+            if (!re.isValid()) {
+                respond(Result::failure(QStringLiteral("Invalid name filter regex: %1").arg(re.errorString())));
+                return;
+            }
+        }
+
+        const service::FilterPolicy policy(fs);
         constexpr int kBatch = 500;
         const qint64 total = app_->torrents()->statistics().torrents;
         int scanned = 0;
         int matched = 0;
-        for (int offset = 0;; offset += kBatch) {
-            const QVector<domain::Torrent> batch = app_->torrents()->page(offset, kBatch);
+        // Keyset pagination: OFFSET cannot walk past Manticore's max_matches
+        // (1000), and removing rows mid-sweep would shift the rest into offsets
+        // already passed.
+        qint64 afterId = 0;
+        for (;;) {
+            const QVector<domain::Torrent> batch = app_->torrents()->pageAfterId(afterId, kBatch);
             if (batch.isEmpty())
                 break;
+            afterId = batch.last().id;
             for (const domain::Torrent& t : batch) {
                 ++scanned;
-                if (!app_->indexing()->accepts(t)) {
+                if (!policy.accepts(t)) {
                     ++matched;
                     if (!dryRun)
                         app_->torrents()->remove(t.hash);
                 }
             }
-            emit event("torrent.cleanup.progress",
+            emit event("torrentCleanupProgress",
                 QJsonObject {
                     { "scanned", scanned }, { "matched", matched }, { "total", static_cast<double>(total) } });
         }
@@ -455,6 +618,114 @@ void ApiRouter::registerMethods()
         result["alreadyExists"] = inserted.alreadyExists;
         result["imported"] = !inserted.alreadyExists;
         respond(Result::success(result));
+    });
+
+    // -----------------------------------------------------------------------
+    // Whole-database replication
+    // -----------------------------------------------------------------------
+    add("database.export", [this](const QJsonObject& params, const ResultCallback& respond) {
+        service::DatabaseSyncService* sync = app_->databaseSync();
+        if (!sync) {
+            respond(Result::failure("Database sync is not available"));
+            return;
+        }
+        const QString path = params.contains("path") ? params["path"].toString() : params["file"].toString();
+        QString error;
+        if (!sync->exportToFile(path, &error)) {
+            respond(Result::failure(error));
+            return;
+        }
+        // The export runs in the background; progress arrives as
+        // databaseSyncProgress events and the summary as databaseSyncFinished.
+        respond(Result::success(sync->statusJson()));
+    });
+
+    add("database.import", [this](const QJsonObject& params, const ResultCallback& respond) {
+        service::DatabaseSyncService* sync = app_->databaseSync();
+        if (!sync) {
+            respond(Result::failure("Database sync is not available"));
+            return;
+        }
+        const QString path = params.contains("path") ? params["path"].toString() : params["file"].toString();
+        service::DatabaseSyncService::ImportOptions options;
+        options.applyFilters = params["applyFilters"].toBool(true);
+        options.resume = params["resume"].toBool(true);
+        options.removeWhenDone = params["removeWhenDone"].toBool(false);
+
+        QString error;
+        if (!sync->importFromFile(path, options, &error)) {
+            respond(Result::failure(error));
+            return;
+        }
+        respond(Result::success(sync->statusJson()));
+    });
+
+    add("database.pull", [this](const QJsonObject& params, const ResultCallback& respond) {
+        service::DatabaseSyncService* sync = app_->databaseSync();
+        if (!sync) {
+            respond(Result::failure("Database sync is not available"));
+            return;
+        }
+        const QString peerId = params.contains("peer") ? params["peer"].toString() : params["peerId"].toString();
+        service::DatabaseSyncService::ImportOptions options;
+        options.applyFilters = params["applyFilters"].toBool(true);
+
+        QString error;
+        if (!sync->requestFromPeer(peerId, options, &error)) {
+            respond(Result::failure(error));
+            return;
+        }
+        respond(Result::success(sync->statusJson()));
+    });
+
+    add("database.peers", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        // Only the peers a pull could actually succeed against: they advertised
+        // databaseSharing in the handshake. Peers with it off, and clients too old
+        // to know the feature, are absent rather than listed and unusable.
+        const QHash<QString, domain::PeerStats> peers = app_->peers()->databaseSharingPeers();
+        QJsonArray result;
+        for (auto it = peers.constBegin(); it != peers.constEnd(); ++it) {
+            QJsonObject peer = it.value().toJson();
+            peer["peerId"] = it.key();
+            result.append(peer);
+        }
+        respond(Result::success(result));
+    });
+
+    add("database.status", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        service::DatabaseSyncService* sync = app_->databaseSync();
+        if (!sync) {
+            respond(Result::failure("Database sync is not available"));
+            return;
+        }
+        respond(Result::success(sync->statusJson()));
+    });
+
+    add("database.cancel", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        service::DatabaseSyncService* sync = app_->databaseSync();
+        if (!sync) {
+            respond(Result::failure("Database sync is not available"));
+            return;
+        }
+        sync->cancel();
+        respond(Result::success(sync->statusJson()));
+    });
+
+    // Rebuild the dump we hand to peers. Normally nobody needs to call this — the
+    // snapshot renews itself once it ages out or the index drifts away from it —
+    // but it is the escape hatch when a user wants peers to see recent work now.
+    add("database.snapshot", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        service::DatabaseSyncService* sync = app_->databaseSync();
+        if (!sync) {
+            respond(Result::failure("Database sync is not available"));
+            return;
+        }
+        QString error;
+        if (!sync->rebuildSnapshot(&error)) {
+            respond(Result::failure(error));
+            return;
+        }
+        respond(Result::success(sync->statusJson()));
     });
 
     // -----------------------------------------------------------------------

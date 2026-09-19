@@ -1,5 +1,7 @@
 #include "app/config_store.h"
 
+#include "common/logging.h"
+
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -21,6 +23,9 @@ QVariant clampToRange(const QString& key, const QVariant& value)
 {
     if (key == QLatin1String("p2pConnections")) {
         return qBound(kMinP2pConnections, value.toInt(), kMaxP2pConnections);
+    }
+    if (key == QLatin1String("logMaxSizeMb")) {
+        return qBound(common::kMinLogMaxSizeMb, value.toInt(), common::kMaxLogMaxSizeMb);
     }
     return value;
 }
@@ -52,9 +57,11 @@ void ConfigStore::setDefaults()
 
         // P2P
         { "p2pConnections", 10 }, { "p2pReplication", true }, { "p2pReplicationServer", true },
+        { "databaseSharing", true }, { "databaseSnapshotMaxAgeHours", 6 }, { "databaseSnapshotMaxDriftPercent", 10 },
 
         // Indexer
-        { "indexer", true }, { "trackers", true }, { "restApi", false }, { "upnp", true },
+        { "indexer", true }, { "trackers", true }, { "restApi", false }, { "upnp", true }, { "holePunch", true },
+        { "relay", true }, { "relayServe", false },
 
         // Spider
         { "spider", QJsonObject { { "walkInterval", 100 } } },
@@ -68,11 +75,15 @@ void ConfigStore::setDefaults()
         { "downloadPath", QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) },
 
         // UI
-        { "language", "en" }, { "darkMode", false }, { "trayOnClose", false }, { "trayOnMinimize", true },
-        { "startMinimized", false }, { "checkUpdatesOnStartup", true },
+        { "language", "en" }, { "darkMode", false }, { "safeSearch", false }, { "searchHistory", true },
+        { "trayOnClose", false }, { "trayOnMinimize", true }, { "startMinimized", false },
+        { "checkUpdatesOnStartup", true },
 
         // Legal
-        { "agreementAccepted", false }
+        { "agreementAccepted", false },
+
+        // Logging
+        { "logMaxSizeMb", common::kDefaultLogMaxSizeMb }
     };
 }
 
@@ -141,6 +152,8 @@ void ConfigStore::validateAndClamp()
 {
     config_["p2pConnections"]
         = QJsonValue::fromVariant(clampToRange("p2pConnections", config_["p2pConnections"].toInt()));
+    config_["logMaxSizeMb"] = QJsonValue::fromVariant(
+        clampToRange("logMaxSizeMb", config_["logMaxSizeMb"].toInt(common::kDefaultLogMaxSizeMb)));
 
     // Replication needs the replication server. The typed setters keep this
     // invariant on writes; this repairs a config file edited by hand.
@@ -246,6 +259,35 @@ void ConfigStore::setP2pReplicationServer(bool enabled)
     setValue("p2pReplicationServer", enabled);
 }
 
+bool ConfigStore::databaseSharing() const
+{
+    return config_["databaseSharing"].toBool(true);
+}
+void ConfigStore::setDatabaseSharing(bool enabled)
+{
+    setValue("databaseSharing", enabled);
+}
+
+int ConfigStore::databaseSnapshotMaxAgeHours() const
+{
+    // Clamped rather than trusted: a zero would rebuild the snapshot on every
+    // single request, which is the behaviour the snapshot exists to remove.
+    return qBound(1, config_["databaseSnapshotMaxAgeHours"].toInt(6), 24 * 30);
+}
+void ConfigStore::setDatabaseSnapshotMaxAgeHours(int hours)
+{
+    setValue("databaseSnapshotMaxAgeHours", hours);
+}
+
+int ConfigStore::databaseSnapshotMaxDriftPercent() const
+{
+    return qBound(1, config_["databaseSnapshotMaxDriftPercent"].toInt(10), 100);
+}
+void ConfigStore::setDatabaseSnapshotMaxDriftPercent(int percent)
+{
+    setValue("databaseSnapshotMaxDriftPercent", percent);
+}
+
 // ============================================================================
 // Indexer Settings
 // ============================================================================
@@ -280,6 +322,21 @@ void ConfigStore::setRestApiEnabled(bool enabled)
 bool ConfigStore::upnpEnabled() const
 {
     return config_["upnp"].toBool(true);
+}
+
+bool ConfigStore::holePunchEnabled() const
+{
+    return config_["holePunch"].toBool(true);
+}
+
+bool ConfigStore::relayEnabled() const
+{
+    return config_["relay"].toBool(true);
+}
+
+bool ConfigStore::relayServeEnabled() const
+{
+    return config_["relayServe"].toBool(false);
 }
 
 // ============================================================================
@@ -362,6 +419,19 @@ void ConfigStore::setFiltersContentType(const QString& type)
     setValue("filters.contentType", type);
 }
 
+service::FilterSettings ConfigStore::filterSettings() const
+{
+    service::FilterSettings fs;
+    fs.maxFiles = filtersMaxFiles();
+    fs.sizeMin = filtersSizeMin();
+    fs.sizeMax = filtersSizeMax();
+    fs.adultFilter = filtersAdultFilter();
+    fs.namingRegExp = filtersNamingRegExp();
+    fs.namingRegExpNegative = filtersNamingRegExpNegative();
+    fs.contentTypeFilter = filtersContentType();
+    return fs;
+}
+
 // ============================================================================
 // Client Settings
 // ============================================================================
@@ -395,6 +465,24 @@ bool ConfigStore::darkMode() const
 void ConfigStore::setDarkMode(bool enabled)
 {
     setValue("darkMode", enabled);
+}
+
+bool ConfigStore::safeSearch() const
+{
+    return config_["safeSearch"].toBool(false);
+}
+void ConfigStore::setSafeSearch(bool enabled)
+{
+    setValue("safeSearch", enabled);
+}
+
+bool ConfigStore::searchHistoryEnabled() const
+{
+    return config_["searchHistory"].toBool(true);
+}
+void ConfigStore::setSearchHistoryEnabled(bool enabled)
+{
+    setValue("searchHistory", enabled);
 }
 
 bool ConfigStore::trayOnClose() const
@@ -442,6 +530,19 @@ void ConfigStore::setAgreementAccepted(bool accepted)
     if (setValue("agreementAccepted", accepted)) {
         save(); // Immediately persist agreement acceptance
     }
+}
+
+// ============================================================================
+// Logging
+// ============================================================================
+
+int ConfigStore::logMaxSizeMb() const
+{
+    return config_["logMaxSizeMb"].toInt(common::kDefaultLogMaxSizeMb);
+}
+void ConfigStore::setLogMaxSizeMb(int megabytes)
+{
+    setValue("logMaxSizeMb", megabytes);
 }
 
 // ============================================================================

@@ -1,8 +1,10 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QHash>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMainWindow>
 #include <QSplitter>
@@ -22,11 +24,16 @@ class Application;
 // UI components
 class QLineEdit;
 class QPushButton;
+class QCompleter;
+class QStringListModel;
 class QTableView;
 class SearchResultModel;
 class TorrentItemDelegate;
 class TorrentDetailsPanel;
 class QMenu;
+class QToolButton;
+class QSpinBox;
+class QDoubleSpinBox;
 class TopTorrentsWidget;
 class FeedWidget;
 class DownloadsWidget;
@@ -43,20 +50,31 @@ public:
     explicit MainWindow(rats::app::Application* app, QWidget* parent = nullptr);
     ~MainWindow();
 
+public slots:
+    /// Un-minimize, un-hide and focus the window (tray click, second launch).
+    void bringToFront();
+
 protected:
     void closeEvent(QCloseEvent* event) override;
+    // Watches the search field so clicking/focusing it while empty drops down
+    // the search history.
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void changeEvent(QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
 
 private slots:
     void onSearchButtonClicked();
     void onSearchTextChanged(const QString& text);
+    // Standard line-edit menu plus the search-history entries.
+    void showSearchContextMenu(const QPoint& pos);
+    void clearSearchHistory();
     void onTorrentSelected(const QModelIndex& index);
     void onTorrentDoubleClicked(const QModelIndex& index);
     void onSortOrderChanged(int index);
     void onPeerCountChanged(int count);
-    void onSpiderStatusChanged(const QString& status);
+    void refreshSpiderStatus();
     void updateNetworkStatus(); // Timer-based status update
     void onTorrentIndexed(const rats::domain::Torrent& torrent);
     void onDetailsPanelCloseRequested();
@@ -71,6 +89,9 @@ private slots:
     // Torrent management slots
     void addTorrentFile(); // Add .torrent file to search index
     void createTorrent(); // Create torrent from file/directory and seed
+    void exportDatabase(); // Write the whole index to a portable .ratsdb dump
+    void importDatabase(); // Merge somebody else's .ratsdb dump into the index
+    void pullDatabaseFromPeer(); // Ask a connected peer for its whole index
 
     // Settings slots - applied immediately
     void onDarkModeChanged(bool enabled);
@@ -101,7 +122,55 @@ private:
     void connectServiceSignals(); // transport / repository / indexing / peers
     void connectPeerSignals(); // remote P2P results streamed into the UI
     void performSearch(const QString& query);
+
+    // Size / file-count ranges from the "Filters" popup. 0 is "no bound" on
+    // every field — the shape both TorrentRepository and the P2P wire expect.
+    struct SearchFilters {
+        qint64 sizeMin = 0;
+        qint64 sizeMax = 0;
+        int filesMin = 0;
+        int filesMax = 0;
+
+        bool isEmpty() const { return sizeMin == 0 && sizeMax == 0 && filesMin == 0 && filesMax == 0; }
+        int activeCount() const
+        {
+            return (sizeMin > 0 ? 1 : 0) + (sizeMax > 0 ? 1 : 0) + (filesMin > 0 ? 1 : 0) + (filesMax > 0 ? 1 : 0);
+        }
+        bool operator==(const SearchFilters& other) const
+        {
+            return sizeMin == other.sizeMin && sizeMax == other.sizeMax && filesMin == other.filesMin
+                && filesMax == other.filesMax;
+        }
+    };
+    // Build the "Filters" drop-down (size from/to, files from/to) for the
+    // search bar. Called from setupUi() before the button is laid out.
+    void setupSearchFilters();
+    // Read the popup's widgets into bytes / plain counts.
+    SearchFilters currentSearchFilters() const;
+    // Refresh the button label ("Filters (2)") and its tooltip, and keep the
+    // max bounds from sitting below the min ones.
+    void updateSearchFiltersButton();
+    // Clear every range back to "any".
+    void resetSearchFilters();
+    // Set up the history dropdown on the search field (completer + event filter).
+    void setupSearchHistory();
+    // Re-fill the completer from app_->searchHistory(). Wired to its
+    // historyChanged signal, so every recorded query shows up immediately.
+    void refreshSearchHistory();
+    // Drop down the full history (no prefix filtering). No-op when empty.
+    void showSearchHistoryPopup();
     void updateStatusBar();
+    // Transient status text (indexed torrents, downloads, migrations, …). It
+    // goes into its own status-bar slot instead of QStatusBar::showMessage(),
+    // which would hide the peer/DHT/torrent counters for the whole timeout.
+    // timeoutMs <= 0 keeps the text until the next message.
+    void showStatusMessage(const QString& message, int timeoutMs = 0);
+    // One status-bar line for a database export/import/transfer progress payload.
+    QString databaseSyncStatusText(const QJsonObject& info) const;
+    QString databaseServeStatusText(const QJsonObject& info) const;
+    void clearStatusMessage();
+    // Re-elide statusMessageText_ to the label's current width.
+    void updateStatusMessageElide();
     void applyTheme(bool darkMode);
     void setupSystemTray();
     void loadSettings();
@@ -137,8 +206,24 @@ private:
 
     // UI Components
     QLineEdit* searchLineEdit = nullptr;
+    QCompleter* searchCompleter = nullptr; // history dropdown on searchLineEdit
+    QStringListModel* searchHistoryModel = nullptr; // completer's backing model
     QPushButton* searchButton = nullptr;
     QComboBox* sortComboBox = nullptr;
+    QComboBox* typeComboBox = nullptr;
+    QCheckBox* safeSearchCheckBox = nullptr;
+    // Search-bar "Filters" drop-down: size and file-count ranges.
+    QToolButton* filtersButton = nullptr;
+    QMenu* filtersMenu = nullptr;
+    QDoubleSpinBox* sizeMinSpin = nullptr;
+    QDoubleSpinBox* sizeMaxSpin = nullptr;
+    QComboBox* sizeMinUnit = nullptr;
+    QComboBox* sizeMaxUnit = nullptr;
+    QSpinBox* filesMinSpin = nullptr;
+    QSpinBox* filesMaxSpin = nullptr;
+    // Snapshot taken when the popup opens, so closing it only re-runs the
+    // search when something actually changed.
+    SearchFilters filtersOnOpen_;
     QTableView* resultsTableView = nullptr;
     QTabWidget* tabWidget = nullptr;
     QSplitter* mainSplitter = nullptr; // Horizontal: tabs + details
@@ -159,6 +244,10 @@ private:
     QLabel* dhtNodeCountLabel = nullptr;
     QLabel* torrentCountLabel = nullptr;
     QLabel* spiderStatusLabel = nullptr;
+    // Transient messages live here, next to (not on top of) the counters above.
+    QLabel* statusMessageLabel = nullptr;
+    QTimer* statusMessageTimer_ = nullptr;
+    QString statusMessageText_;
     QTimer* statusUpdateTimer_ = nullptr;
 
     // Models and Delegates
@@ -177,6 +266,11 @@ private:
     QSystemTrayIcon* trayIcon = nullptr;
     QMenu* trayMenu = nullptr;
     bool trayNotificationShown_ = false;
+
+    // Set once the user has committed to installing an update. While true,
+    // closeEvent() shuts the app down unconditionally — no tray-hide, no
+    // confirmation prompt — so the external updater is never left waiting.
+    bool updateInstalling_ = false;
 };
 
 #endif // MAINWINDOW_H

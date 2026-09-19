@@ -73,6 +73,14 @@ signals:
     void allMigrationsCompleted();
     void migrationError(const QString& migrationId, const QString& error);
 
+    // Blocking pre-start migrations. They run on the caller's thread inside
+    // Application::start(), before any window exists and before the event loop
+    // is entered, so a front-end that wants to show them must connect between
+    // constructing Application and calling start(). syncMigrationsFinished() is
+    // emitted only when at least one migration actually ran.
+    void syncMigrationStarted(const QString& migrationId, const QString& description);
+    void syncMigrationsFinished();
+
 private:
     // A sync migration returns success; an async one runs to completion (or until
     // stopRequested_) and reports progress through the shared state.
@@ -121,10 +129,19 @@ private:
     // Whether a migration applies to the current app version.
     bool shouldRunMigration(const MigrationDef& migration) const;
 
+    // Publish a progress tick: updates currentProgress_ (read by front-ends from
+    // any thread) and emits migrationProgress.
+    void reportProgress(const QString& migrationId, qint64 current, qint64 total);
+
     // Migration bodies ----------------------------------------------------------
     // Sync (blocking, must succeed).
     bool syncCleanupFeedStorage();
     bool syncUpdateWalkInterval();
+    // Re-key every row from the old sequential id to one derived from its
+    // infohash. Blocking on purpose: until it finishes, a lookup by hash cannot
+    // find the rows that still carry a counter id, so no service may run against
+    // a half-migrated table.
+    bool syncDeriveRowIds();
     // Async (background, resumable).
     void recategorizeTorrents();
     void removeUnknownTorrents();

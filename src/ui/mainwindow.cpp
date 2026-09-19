@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "searchresultmodel.h"
+#include "theme.h"
 #include "torrentdetailspanel.h"
 #include "torrentitemdelegate.h"
 #include "torrentmenu.h"
@@ -20,6 +21,7 @@
 #include "app/application.h"
 #include "app/config_store.h"
 #include "app/favorites_store.h"
+#include "app/search_history_store.h"
 #include "app/translation_manager.h"
 #include "common/result.h"
 #include "data/torrent_repository.h"
@@ -30,6 +32,7 @@
 #include "net/p2p_transport.h"
 #include "peer/peer_api.h"
 #include "rest/api_router.h"
+#include "services/database_sync_service.h"
 #include "services/download_service.h"
 #include "services/indexing_service.h"
 #include "services/migration_service.h"
@@ -44,20 +47,27 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCompleter>
 #include <QContextMenuEvent>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFocusEvent>
+#include <QFontMetrics>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -67,10 +77,13 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QResizeEvent>
 #include <QSettings>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QStringListModel>
 #include <QStyle>
 #include <QSysInfo>
 #include <QSystemTrayIcon>
@@ -78,9 +91,11 @@
 #include <QTableView>
 #include <QTextEdit>
 #include <QTimer>
+#include <QToolButton>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVBoxLayout>
+#include <QWidgetAction>
 
 using rats::Result;
 using rats::domain::SearchHit;
@@ -121,12 +136,18 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     wireWidgets();
     connectSignals();
 
-    // Seed the status bar from live state.
+    // Seed the status bar from live state. The transport starts before the window
+    // exists (and the agreement dialog above spins a nested event loop), so peers
+    // may already be connected: peerCountChanged only fires on a change, and every
+    // emit before connectSignals() is lost.
     if (app_->torrents()) {
         cachedTorrentCount_ = app_->torrents()->statistics().torrents;
     }
     if (app_->peers()) {
         cachedRemoteTorrentCount_ = app_->peers()->remoteTorrentsCount();
+    }
+    if (app_->transport()) {
+        onPeerCountChanged(app_->transport()->peerCount());
     }
     updateStatusBar();
     refreshP2PStatus();
@@ -146,16 +167,8 @@ MainWindow::~MainWindow()
 
 void MainWindow::applyTheme(bool darkMode)
 {
-    QString stylePath = darkMode ? ":/styles/styles/dark.qss" : ":/styles/styles/light.qss";
-    QFile styleFile(stylePath);
-    if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QString styleSheet = QString::fromUtf8(styleFile.readAll());
-        styleFile.close();
-        setStyleSheet(styleSheet);
-        qInfo() << (darkMode ? "Dark" : "Light") << "theme loaded from resources";
-    } else {
-        qWarning() << "Failed to load theme from resources:" << styleFile.errorString();
-    }
+    rats::ui::Theme::instance().setDark(darkMode);
+    setStyleSheet(rats::ui::Theme::instance().styleSheet());
 }
 
 void MainWindow::setupUi()
@@ -197,6 +210,26 @@ void MainWindow::setupUi()
     searchButton->setDefault(true);
     searchButton->setCursor(Qt::PointingHandCursor);
 
+    // Content-type filter. The data strings are the canonical wire names from
+    // domain::ContentType, passed straight through to the repository filter.
+    typeComboBox = new QComboBox(this);
+    typeComboBox->addItem(tr("All types"), "");
+    typeComboBox->addItem(tr("Video"), "video");
+    typeComboBox->addItem(tr("Audio"), "audio");
+    typeComboBox->addItem(tr("Games"), "games");
+    typeComboBox->addItem(tr("Software"), "software");
+    typeComboBox->addItem(tr("Books"), "books");
+    typeComboBox->addItem(tr("Pictures"), "pictures");
+    typeComboBox->addItem(tr("Archives"), "archive");
+    typeComboBox->setMinimumHeight(44);
+    typeComboBox->setToolTip(tr("Filter results by content type"));
+
+    safeSearchCheckBox = new QCheckBox(tr("Safe"), this);
+    safeSearchCheckBox->setToolTip(tr("Safe search: hide adult content"));
+    safeSearchCheckBox->setCursor(Qt::PointingHandCursor);
+    if (app_ && app_->config())
+        safeSearchCheckBox->setChecked(app_->config()->safeSearch());
+
     sortComboBox = new QComboBox(this);
     sortComboBox->addItem(tr("Sort: Seeders ↓"), "seeders_desc");
     sortComboBox->addItem(tr("Sort: Seeders ↑"), "seeders_asc");
@@ -208,7 +241,14 @@ void MainWindow::setupUi()
     sortComboBox->addItem(tr("Sort: Name Z-A"), "name_desc");
     sortComboBox->setMinimumHeight(44);
 
+    setupSearchHistory();
+
+    setupSearchFilters();
+
     searchLayout->addWidget(searchLineEdit, 1);
+    searchLayout->addWidget(typeComboBox);
+    searchLayout->addWidget(filtersButton);
+    searchLayout->addWidget(safeSearchCheckBox);
     searchLayout->addWidget(sortComboBox);
     searchLayout->addWidget(searchButton);
 
@@ -223,7 +263,7 @@ void MainWindow::setupUi()
     mainSplitter->setHandleWidth(2);
 
     tabWidget = new QTabWidget(this);
-    tabWidget->setDocumentMode(true);
+    tabWidget->setDocumentMode(false);
 
     // Search results tab
     QWidget* searchTab = new QWidget();
@@ -310,6 +350,20 @@ void MainWindow::setupMenuBar()
 
     fileMenu->addSeparator();
 
+    QAction* exportDbAction = fileMenu->addAction(tr("📦 &Export Database..."));
+    exportDbAction->setToolTip(tr("Write the whole search index to a file you can share"));
+    connect(exportDbAction, &QAction::triggered, this, &MainWindow::exportDatabase);
+
+    QAction* importDbAction = fileMenu->addAction(tr("📂 &Import Database..."));
+    importDbAction->setToolTip(tr("Merge a database file from another user into your index"));
+    connect(importDbAction, &QAction::triggered, this, &MainWindow::importDatabase);
+
+    QAction* pullDbAction = fileMenu->addAction(tr("🌐 Download Database from &Peer..."));
+    pullDbAction->setToolTip(tr("Ask a connected peer to send you its whole index"));
+    connect(pullDbAction, &QAction::triggered, this, &MainWindow::pullDatabaseFromPeer);
+
+    fileMenu->addSeparator();
+
     QAction* settingsAction = fileMenu->addAction(tr("&Settings"));
     connect(settingsAction, &QAction::triggered, this, &MainWindow::showSettings);
 
@@ -353,19 +407,78 @@ void MainWindow::setupStatusBar()
     peerCountLabel = new QLabel(tr("👥 Peers: %1").arg(0));
     dhtNodeCountLabel = new QLabel(tr("🌐 DHT: %1").arg(0));
     torrentCountLabel = new QLabel(tr("📦 Torrents: %1").arg(0));
-    spiderStatusLabel = new QLabel(tr("🕷️ Spider: Idle"));
+    spiderStatusLabel = new QLabel();
+    refreshSpiderStatus();
+
+    // Transient status text gets its own slot at the right end of the bar. It is
+    // free to shrink (Ignored policy + elision) so a long torrent name never
+    // pushes the counters around, and nothing here ever calls
+    // QStatusBar::showMessage(), which would hide the counters instead.
+    statusMessageLabel = new QLabel();
+    statusMessageLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    statusMessageLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+    statusMessageTimer_ = new QTimer(this);
+    statusMessageTimer_->setSingleShot(true);
+    connect(statusMessageTimer_, &QTimer::timeout, this, &MainWindow::clearStatusMessage);
 
     statusBar()->addWidget(p2pStatusLabel);
     statusBar()->addWidget(peerCountLabel);
     statusBar()->addWidget(dhtNodeCountLabel);
     statusBar()->addWidget(torrentCountLabel);
     statusBar()->addWidget(spiderStatusLabel);
-    statusBar()->addPermanentWidget(new QLabel(tr("Ready")));
+    statusBar()->addWidget(statusMessageLabel, 1);
 
     // Periodic network status refresh (DHT node count etc.)
     statusUpdateTimer_ = new QTimer(this);
     connect(statusUpdateTimer_, &QTimer::timeout, this, &MainWindow::updateNetworkStatus);
     statusUpdateTimer_->start(30000);
+}
+
+void MainWindow::showStatusMessage(const QString& message, int timeoutMs)
+{
+    if (!statusMessageLabel)
+        return;
+
+    statusMessageText_ = message;
+    statusMessageLabel->setToolTip(message);
+    updateStatusMessageElide();
+
+    if (timeoutMs > 0)
+        statusMessageTimer_->start(timeoutMs);
+    else
+        statusMessageTimer_->stop();
+}
+
+void MainWindow::clearStatusMessage()
+{
+    statusMessageText_.clear();
+    if (statusMessageLabel) {
+        statusMessageLabel->clear();
+        statusMessageLabel->setToolTip(QString());
+    }
+}
+
+void MainWindow::updateStatusMessageElide()
+{
+    if (!statusMessageLabel)
+        return;
+
+    const int width = statusMessageLabel->width();
+    if (width <= 0 || statusMessageText_.isEmpty()) {
+        statusMessageLabel->setText(statusMessageText_);
+        return;
+    }
+    statusMessageLabel->setText(
+        statusMessageLabel->fontMetrics().elidedText(statusMessageText_, Qt::ElideRight, width));
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event)
+{
+    QMainWindow::resizeEvent(event);
+    // The message slot shrinks with the window — re-elide so the counters to its
+    // left keep their space.
+    updateStatusMessageElide();
 }
 
 void MainWindow::wireWidgets()
@@ -406,7 +519,33 @@ void MainWindow::connectSearchSignals()
     connect(searchButton, &QPushButton::clicked, this, &MainWindow::onSearchButtonClicked);
     connect(searchLineEdit, &QLineEdit::returnPressed, this, &MainWindow::onSearchButtonClicked);
     connect(searchLineEdit, &QLineEdit::textChanged, this, &MainWindow::onSearchTextChanged);
+    connect(searchLineEdit, &QWidget::customContextMenuRequested, this, &MainWindow::showSearchContextMenu);
+    if (app_ && app_->searchHistory()) {
+        connect(app_->searchHistory(), &rats::app::SearchHistoryStore::historyChanged, this,
+            &MainWindow::refreshSearchHistory);
+    }
     connect(sortComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onSortOrderChanged);
+
+    // Changing a filter re-runs the current query so results update in place.
+    connect(typeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        if (!currentSearchQuery_.isEmpty())
+            performSearch(currentSearchQuery_);
+    });
+    // Adjusting a range re-runs the query when the popup closes, not on every
+    // keystroke inside it — a spin box passes through a dozen values on the way
+    // to the one the user means.
+    connect(filtersMenu, &QMenu::aboutToShow, this, [this]() { filtersOnOpen_ = currentSearchFilters(); });
+    connect(filtersMenu, &QMenu::aboutToHide, this, [this]() {
+        if (currentSearchFilters() == filtersOnOpen_ || currentSearchQuery_.isEmpty())
+            return;
+        performSearch(currentSearchQuery_);
+    });
+    connect(safeSearchCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+        if (app_ && app_->config())
+            app_->config()->setSafeSearch(checked);
+        if (!currentSearchQuery_.isEmpty())
+            performSearch(currentSearchQuery_);
+    });
 
     connect(resultsTableView->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
         [this](const QModelIndex& current, const QModelIndex&) { onTorrentSelected(current); });
@@ -468,7 +607,7 @@ void MainWindow::connectDetailsSignals()
     connect(detailsPanel, &TorrentDetailsPanel::downloadCancelRequested, this, [this](const QString& hash) {
         if (app_->downloads()) {
             app_->downloads()->remove(hash, /*saveResumeData*/ false);
-            statusBar()->showMessage(tr("Download cancelled"), 2000);
+            showStatusMessage(tr("Download cancelled"), 2000);
         }
     });
 }
@@ -511,7 +650,7 @@ void MainWindow::connectServiceSignals()
 
     // Crawler status text.
     if (app_->crawler()) {
-        connect(app_->crawler(), &rats::net::Crawler::statusChanged, this, &MainWindow::onSpiderStatusChanged);
+        connect(app_->crawler(), &rats::net::Crawler::statusChanged, this, &MainWindow::refreshSpiderStatus);
     }
 
     // New torrents indexed (from any source) update the status message.
@@ -566,7 +705,62 @@ void MainWindow::connectServiceSignals()
                 QMessageBox::warning(this, tr("Export Torrent"), tr("Could not export the torrent.\n\n%1").arg(reason));
             });
         connect(exporter, &rats::service::TorrentExporter::statusMessage, this,
-            [this](const QString& message, int timeoutMs) { statusBar()->showMessage(message, timeoutMs); });
+            [this](const QString& message, int timeoutMs) { showStatusMessage(message, timeoutMs); });
+    }
+
+    // Whole-database export/import/peer transfer. The service does the work on a
+    // worker thread and reports the same JSON payload the REST API pushes; here
+    // it becomes a status-bar line and a final message box.
+    //
+    // Only the *local* lane may interrupt: syncFinished belongs to the operation
+    // this user started. Serving another peer reports through serveProgress /
+    // serveFinished and stays in the status bar — a peer that gave up on our
+    // upload is not this user's problem, and putting that in a modal dialog is
+    // what the "database sync did not finish" reports were about.
+    if (app_->databaseSync()) {
+        auto* sync = app_->databaseSync();
+        connect(sync, &rats::service::DatabaseSyncService::syncProgress, this,
+            [this](const QJsonObject& info) { showStatusMessage(databaseSyncStatusText(info), 0); });
+        connect(sync, &rats::service::DatabaseSyncService::statusMessage, this,
+            [this](const QString& message, int timeoutMs) { showStatusMessage(message, timeoutMs); });
+        connect(sync, &rats::service::DatabaseSyncService::serveProgress, this, [this](const QJsonObject& info) {
+            const QString text = databaseServeStatusText(info);
+            if (!text.isEmpty())
+                showStatusMessage(text, 0);
+        });
+        connect(sync, &rats::service::DatabaseSyncService::serveFinished, this,
+            [](const QString& peerId, bool success, const QJsonObject& summary) {
+                // Deliberately log-only. See the note above.
+                qInfo() << "[MainWindow] database serve to" << peerId.left(8) << (success ? "completed" : "ended:")
+                        << summary["reason"].toString();
+            });
+        connect(sync, &rats::service::DatabaseSyncService::syncFinished, this,
+            [this](bool success, const QJsonObject& summary) {
+                if (!success) {
+                    showStatusMessage(tr("Database sync failed."), 5000);
+                    QMessageBox::warning(this, tr("Database Sync"),
+                        tr("The database sync did not finish.\n\n%1").arg(summary["error"].toString()));
+                    return;
+                }
+
+                const QString operation = summary["operation"].toString();
+                const qint64 processed = summary["processed"].toVariant().toLongLong();
+                if (operation == QLatin1String("export")) {
+                    showStatusMessage(tr("Exported %n torrent(s).", nullptr, static_cast<int>(processed)), 8000);
+                    QMessageBox::information(this, tr("Export Database"),
+                        tr("Exported %n torrent(s) to:\n%1", nullptr, static_cast<int>(processed))
+                            .arg(summary["path"].toString()));
+                    return;
+                }
+                const qint64 inserted = summary["inserted"].toVariant().toLongLong();
+                const qint64 merged = summary["merged"].toVariant().toLongLong();
+                showStatusMessage(
+                    tr("Imported %n new torrent(s) (%1 already known).", nullptr, static_cast<int>(inserted))
+                        .arg(merged),
+                    8000);
+                QMessageBox::information(this, tr("Import Database"),
+                    tr("Merge finished.\n\n%1 new torrents added\n%2 already in your index").arg(inserted).arg(merged));
+            });
     }
 
     // Background data migrations run (in a worker thread) while the window is up
@@ -585,7 +779,7 @@ void MainWindow::connectServiceSignals()
                         .arg(migrationId, error));
             });
         connect(migrations, &rats::service::MigrationService::allMigrationsCompleted, this,
-            [this]() { statusBar()->showMessage(tr("Data migration complete"), 4000); });
+            [this]() { showStatusMessage(tr("Data migration complete"), 4000); });
     }
 }
 
@@ -628,13 +822,177 @@ void MainWindow::connectPeerSignals()
                 return;
             if (detailsPanel && detailsPanel->currentHash() != hash)
                 return;
-            QVector<rats::domain::File> files = codec::filesFromJson(data["files"].toArray());
-            if (!files.isEmpty()) {
-                filesWidget->setFiles(hash, data["name"].toString(), files);
+            // Parse through the shared codec so the file list is read from the
+            // canonical "files_list" key (with legacy "filesList" fallback), not
+            // the "files" count.
+            const rats::domain::Torrent t = codec::torrentFromJson(data);
+            if (!t.fileList.isEmpty()) {
+                filesWidget->setFiles(hash, t.name, t.fileList);
                 filesWidget->show();
                 verticalSplitter->setSizes({ 600, 200 });
             }
         });
+}
+
+// --- Search filters (size / file-count ranges) ------------------------------
+
+namespace {
+// Unit multipliers offered next to each size field. The combo carries the
+// multiplier as its item data, so reading a field back is one multiplication.
+void fillSizeUnits(QComboBox* combo, int defaultIndex)
+{
+    combo->addItem(QObject::tr("KB"), QVariant::fromValue<qint64>(1024LL));
+    combo->addItem(QObject::tr("MB"), QVariant::fromValue<qint64>(1024LL * 1024));
+    combo->addItem(QObject::tr("GB"), QVariant::fromValue<qint64>(1024LL * 1024 * 1024));
+    combo->addItem(QObject::tr("TB"), QVariant::fromValue<qint64>(1024LL * 1024 * 1024 * 1024));
+    combo->setCurrentIndex(defaultIndex);
+}
+
+qint64 sizeFieldBytes(const QDoubleSpinBox* spin, const QComboBox* unit)
+{
+    if (spin->value() <= 0.0)
+        return 0; // "any"
+    return static_cast<qint64>(spin->value() * static_cast<double>(unit->currentData().toLongLong()));
+}
+} // namespace
+
+void MainWindow::setupSearchFilters()
+{
+    filtersButton = new QToolButton(this);
+    // Styled through the theme sheets to match the combo boxes it sits between;
+    // the plain QToolButton rule is the flat toolbar look.
+    filtersButton->setObjectName("searchFiltersButton");
+    filtersButton->setPopupMode(QToolButton::InstantPopup);
+    filtersButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    filtersButton->setMinimumHeight(44);
+    filtersButton->setCursor(Qt::PointingHandCursor);
+
+    // A drop-down rather than four more widgets in the search bar: the ranges
+    // are used far less often than the type/sort combos, and the button label
+    // still reports how many of them are active.
+    filtersMenu = new QMenu(filtersButton);
+    QWidget* panel = new QWidget(filtersMenu);
+    QFormLayout* form = new QFormLayout(panel);
+    form->setContentsMargins(12, 10, 12, 10);
+    form->setSpacing(8);
+
+    // Every field treats 0 as "no bound", which is what the special value text
+    // spells out — an empty-looking spin box would read as "zero bytes".
+    auto makeSizeRow = [panel](QDoubleSpinBox*& spin, QComboBox*& unit, int defaultUnitIndex) {
+        spin = new QDoubleSpinBox(panel);
+        spin->setRange(0.0, 999999.0);
+        spin->setDecimals(2);
+        spin->setSpecialValueText(tr("any"));
+        spin->setMinimumWidth(110);
+        unit = new QComboBox(panel);
+        unit->setObjectName("searchFilterUnit"); // narrower than the global combo min-width
+        fillSizeUnits(unit, defaultUnitIndex);
+
+        QWidget* row = new QWidget(panel);
+        QHBoxLayout* layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(6);
+        layout->addWidget(spin, 1);
+        layout->addWidget(unit);
+        return row;
+    };
+
+    form->addRow(tr("Size from:"), makeSizeRow(sizeMinSpin, sizeMinUnit, 1)); // MB
+    form->addRow(tr("Size to:"), makeSizeRow(sizeMaxSpin, sizeMaxUnit, 2)); // GB
+
+    auto makeCountSpin = [panel](QSpinBox*& spin) {
+        spin = new QSpinBox(panel);
+        spin->setRange(0, 1000000);
+        spin->setSpecialValueText(tr("any"));
+        spin->setMinimumWidth(110);
+        return spin;
+    };
+    form->addRow(tr("Files from:"), makeCountSpin(filesMinSpin));
+    form->addRow(tr("Files to:"), makeCountSpin(filesMaxSpin));
+
+    QPushButton* resetButton = new QPushButton(tr("Reset filters"), panel);
+    // Neutral: the popup has no accept button, so nothing here should read as
+    // the primary action.
+    resetButton->setObjectName("secondaryButton");
+    resetButton->setCursor(Qt::PointingHandCursor);
+    form->addRow(resetButton);
+
+    QWidgetAction* panelAction = new QWidgetAction(filtersMenu);
+    panelAction->setDefaultWidget(panel);
+    filtersMenu->addAction(panelAction);
+    filtersButton->setMenu(filtersMenu);
+
+    connect(resetButton, &QPushButton::clicked, this, &MainWindow::resetSearchFilters);
+    // The label has to stay truthful while the popup is open, so every editor
+    // feeds it; the search itself only re-runs once the popup closes.
+    connect(sizeMinSpin, &QDoubleSpinBox::valueChanged, this, &MainWindow::updateSearchFiltersButton);
+    connect(sizeMaxSpin, &QDoubleSpinBox::valueChanged, this, &MainWindow::updateSearchFiltersButton);
+    connect(filesMinSpin, &QSpinBox::valueChanged, this, &MainWindow::updateSearchFiltersButton);
+    connect(filesMaxSpin, &QSpinBox::valueChanged, this, &MainWindow::updateSearchFiltersButton);
+    connect(sizeMinUnit, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+        [this](int) { updateSearchFiltersButton(); });
+    connect(sizeMaxUnit, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+        [this](int) { updateSearchFiltersButton(); });
+
+    updateSearchFiltersButton();
+}
+
+MainWindow::SearchFilters MainWindow::currentSearchFilters() const
+{
+    SearchFilters filters;
+    if (!sizeMinSpin)
+        return filters;
+    filters.sizeMin = sizeFieldBytes(sizeMinSpin, sizeMinUnit);
+    filters.sizeMax = sizeFieldBytes(sizeMaxSpin, sizeMaxUnit);
+    filters.filesMin = filesMinSpin->value();
+    filters.filesMax = filesMaxSpin->value();
+    return filters;
+}
+
+void MainWindow::updateSearchFiltersButton()
+{
+    if (!filtersButton)
+        return;
+
+    // An upper bound below the lower one can only ever return nothing, so the
+    // one the user is not editing follows along instead of silently emptying
+    // the result list. Raising the max to the min settles on the second pass.
+    const SearchFilters filters = currentSearchFilters();
+    if (filters.sizeMin > 0 && filters.sizeMax > 0 && filters.sizeMax < filters.sizeMin) {
+        const qint64 unit = sizeMaxUnit->currentData().toLongLong();
+        QSignalBlocker block(sizeMaxSpin);
+        sizeMaxSpin->setValue(static_cast<double>(filters.sizeMin) / static_cast<double>(unit));
+    }
+    if (filters.filesMin > 0 && filters.filesMax > 0 && filters.filesMax < filters.filesMin) {
+        QSignalBlocker block(filesMaxSpin);
+        filesMaxSpin->setValue(filters.filesMin);
+    }
+
+    const SearchFilters settled = currentSearchFilters();
+    const int active = settled.activeCount();
+    filtersButton->setText(active > 0 ? tr("Filters (%1)").arg(active) : tr("Filters"));
+
+    QStringList parts;
+    if (settled.sizeMin > 0)
+        parts << tr("size from %1").arg(rats::ui::formatSize(settled.sizeMin));
+    if (settled.sizeMax > 0)
+        parts << tr("size to %1").arg(rats::ui::formatSize(settled.sizeMax));
+    if (settled.filesMin > 0)
+        parts << tr("from %n file(s)", nullptr, settled.filesMin);
+    if (settled.filesMax > 0)
+        parts << tr("to %n file(s)", nullptr, settled.filesMax);
+    filtersButton->setToolTip(
+        parts.isEmpty() ? tr("Filter results by size and file count") : parts.join(QLatin1String(", ")));
+}
+
+void MainWindow::resetSearchFilters()
+{
+    if (!sizeMinSpin)
+        return;
+    sizeMinSpin->setValue(0.0);
+    sizeMaxSpin->setValue(0.0);
+    filesMinSpin->setValue(0);
+    filesMaxSpin->setValue(0);
 }
 
 void MainWindow::performSearch(const QString& query)
@@ -643,8 +1001,11 @@ void MainWindow::performSearch(const QString& query)
         return;
 
     currentSearchQuery_ = query;
+    // Remember what the user searched for (a no-op while history is disabled).
+    if (app_->searchHistory())
+        app_->searchHistory()->add(query);
     qInfo() << "Search started:" << query.left(50) << (query.length() > 50 ? "..." : "");
-    statusBar()->showMessage(tr("🔍 Searching..."), 2000);
+    showStatusMessage(tr("🔍 Searching..."), 2000);
 
     tabWidget->setCurrentIndex(0); // switch to Search Results
 
@@ -665,7 +1026,14 @@ void MainWindow::performSearch(const QString& query)
     req.limit = 50;
     req.sort = sort;
     req.descending = sortData.endsWith("desc");
-    req.safeSearch = false;
+    req.safeSearch = safeSearchCheckBox->isChecked();
+    req.contentType = typeComboBox->currentData().toString();
+
+    const SearchFilters filters = currentSearchFilters();
+    req.sizeMin = filters.sizeMin;
+    req.sizeMax = filters.sizeMax;
+    req.filesMin = filters.filesMin;
+    req.filesMax = filters.filesMax;
 
     searchResultModel->clearResults();
 
@@ -674,14 +1042,14 @@ void MainWindow::performSearch(const QString& query)
     if (app_->search())
         hits = app_->search()->searchTorrents(req);
     searchResultModel->setResults(hits);
-    statusBar()->showMessage(tr("✅ Found %1 torrents").arg(hits.size()), 3000);
+    showStatusMessage(tr("✅ Found %n torrent(s)", nullptr, static_cast<int>(hits.size())), 3000);
 
     // Local file search — merged in as file-match results.
     if (app_->search()) {
         QVector<SearchHit> fileHits = app_->search()->searchFiles(req);
         if (!fileHits.isEmpty()) {
             searchResultModel->addFileResults(fileHits);
-            statusBar()->showMessage(
+            showStatusMessage(
                 tr("✅ Found %1 total results (incl. file matches)").arg(searchResultModel->resultCount()), 3000);
         }
     }
@@ -694,7 +1062,29 @@ void MainWindow::performSearch(const QString& query)
         msg["limit"] = 50;
         msg["orderBy"] = sort;
         msg["orderDesc"] = req.descending;
-        app_->transport()->broadcastMessage("torrent_search", msg);
+        msg["safeSearch"] = req.safeSearch;
+        if (!req.contentType.isEmpty())
+            msg["type"] = req.contentType;
+        // Ranges travel in the same {min,max} shape the REST router takes. An
+        // unset bound is left out entirely rather than sent as 0, so a peer that
+        // does read them cannot mistake "any" for "at least nothing".
+        if (filters.sizeMin > 0 || filters.sizeMax > 0) {
+            QJsonObject size;
+            if (filters.sizeMin > 0)
+                size["min"] = filters.sizeMin;
+            if (filters.sizeMax > 0)
+                size["max"] = filters.sizeMax;
+            msg["size"] = size;
+        }
+        if (filters.filesMin > 0 || filters.filesMax > 0) {
+            QJsonObject files;
+            if (filters.filesMin > 0)
+                files["min"] = filters.filesMin;
+            if (filters.filesMax > 0)
+                files["max"] = filters.filesMax;
+            msg["files"] = files;
+        }
+        app_->transport()->broadcastMessage("searchTorrent", msg);
         app_->transport()->broadcastMessage("searchFiles", msg);
     }
 
@@ -711,7 +1101,7 @@ void MainWindow::performSearch(const QString& query)
                     SearchHit hit;
                     hit.torrent = t;
                     searchResultModel->addResult(hit);
-                    statusBar()->showMessage(tr("✅ Found torrent via DHT"), 3000);
+                    showStatusMessage(tr("✅ Found torrent via DHT"), 3000);
                 }
             });
     }
@@ -729,6 +1119,16 @@ void MainWindow::updateStatusBar()
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     rats::app::ConfigStore* config = app_ ? app_->config() : nullptr;
+
+    // An update install is deliberately shutting the app down. Never intercept
+    // it with the tray or a confirmation prompt — the external updater is
+    // blocked waiting for this process to exit.
+    if (updateInstalling_) {
+        saveSettings();
+        event->accept();
+        QApplication::quit();
+        return;
+    }
 
     // Hide to tray instead of closing if enabled.
     bool closeToTray = config ? config->trayOnClose() : false;
@@ -805,7 +1205,7 @@ void MainWindow::dropEvent(QDropEvent* event)
                     QJsonObject data = response.data().toObject();
                     QString name = data["name"].toString();
                     bool alreadyExists = data["alreadyExists"].toBool();
-                    statusBar()->showMessage(
+                    showStatusMessage(
                         alreadyExists ? tr("Already indexed: %1").arg(name) : tr("Added: %1").arg(name), 2000);
                     // Auto-favorite imported torrents.
                     Torrent t = codec::torrentFromJson(data);
@@ -817,7 +1217,7 @@ void MainWindow::dropEvent(QDropEvent* event)
             });
     }
 
-    statusBar()->showMessage(tr("Processing %1 torrent file(s)...").arg(torrentFiles.size()), 3000);
+    showStatusMessage(tr("Processing %n torrent file(s)...", nullptr, static_cast<int>(torrentFiles.size())), 3000);
 }
 
 // ============================================================================
@@ -834,13 +1234,98 @@ void MainWindow::onSearchTextChanged(const QString& text)
     searchButton->setEnabled(!text.isEmpty());
 }
 
+// ============================================================================
+// Search history
+// ============================================================================
+
+void MainWindow::setupSearchHistory()
+{
+    searchHistoryModel = new QStringListModel(this);
+    searchCompleter = new QCompleter(searchHistoryModel, this);
+    searchCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    // Substring matching, so "ubuntu 24" also surfaces "xubuntu 24.04"; with an
+    // empty prefix every entry matches, which is what the click-to-drop-down
+    // path below relies on.
+    searchCompleter->setFilterMode(Qt::MatchContains);
+    searchCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    searchCompleter->setMaxVisibleItems(12);
+    searchLineEdit->setCompleter(searchCompleter);
+
+    // Picking an entry from the dropdown runs it immediately — activated fires
+    // after the line edit has been filled in.
+    connect(searchCompleter, QOverload<const QString&>::of(&QCompleter::activated), this,
+        [this](const QString& text) { performSearch(text); });
+
+    // Focus/click on an empty field drops down the whole history.
+    searchLineEdit->installEventFilter(this);
+
+    // The history lives next to the standard cut/copy/paste menu.
+    searchLineEdit->setContextMenuPolicy(Qt::CustomContextMenu);
+
+    refreshSearchHistory();
+}
+
+void MainWindow::refreshSearchHistory()
+{
+    if (!searchHistoryModel || !app_ || !app_->searchHistory())
+        return;
+    searchHistoryModel->setStringList(app_->searchHistory()->queries());
+}
+
+void MainWindow::showSearchHistoryPopup()
+{
+    if (!searchCompleter || searchHistoryModel->rowCount() == 0)
+        return;
+    searchCompleter->setCompletionPrefix(QString());
+    searchCompleter->complete();
+}
+
+void MainWindow::showSearchContextMenu(const QPoint& pos)
+{
+    // Start from the built-in menu so cut/copy/paste/undo stay available.
+    QMenu* menu = searchLineEdit->createStandardContextMenu();
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+
+    const QStringList history = app_ && app_->searchHistory() ? app_->searchHistory()->queries(10) : QStringList();
+    if (!history.isEmpty()) {
+        menu->addSeparator();
+        QMenu* recent = menu->addMenu(tr("🕘 Recent searches"));
+        for (const QString& query : history) {
+            QAction* action = recent->addAction(query);
+            connect(action, &QAction::triggered, this, [this, query]() {
+                searchLineEdit->setText(query);
+                performSearch(query);
+            });
+        }
+        recent->addSeparator();
+        recent->addAction(tr("Clear search history"), this, &MainWindow::clearSearchHistory);
+    }
+
+    menu->popup(searchLineEdit->mapToGlobal(pos));
+}
+
+void MainWindow::clearSearchHistory()
+{
+    if (app_ && app_->searchHistory() && app_->searchHistory()->clear())
+        showStatusMessage(tr("🕘 Search history cleared"), 3000);
+}
+
 void MainWindow::onTorrentSelected(const QModelIndex& index)
 {
     if (!index.isValid())
         return;
-    Torrent torrent = searchResultModel->getTorrent(index.row());
-    if (torrent.isValid())
-        showTorrentDetails(torrent);
+    const SearchHit hit = searchResultModel->getHit(index.row());
+    if (!hit.torrent.isValid())
+        return;
+
+    showTorrentDetails(hit.torrent);
+
+    // A remote hit arrives with metadata only — search replies never carry file
+    // lists. If the files panel came up empty (nothing embedded, nothing local),
+    // pull the full torrent from the peer that offered it. The reply repopulates
+    // the panel and clones the torrent, with its files, into our database.
+    if (hit.remote && !hit.sourcePeerId.isEmpty() && !filesWidget->hasFiles() && app_->peerApi())
+        app_->peerApi()->requestTorrent(hit.sourcePeerId, hit.torrent.hash, /*includeFiles*/ true);
 }
 
 void MainWindow::onTorrentDoubleClicked(const QModelIndex& index)
@@ -908,9 +1393,10 @@ void MainWindow::showTorrentDetails(const Torrent& torrent)
     detailsPanel->show();
 
     // Show the file list. TorrentFilesWidget fetches the files itself (from the
-    // torrent's embedded list or the repository) via the Application. A remote
-    // torrent whose files aren't local still gets populated later through the
-    // peerApi::remoteTorrentReceived handler.
+    // torrent's embedded list or the repository) via the Application. For a remote
+    // torrent with no local files, onTorrentSelected kicks off a peer fetch whose
+    // reply repopulates this panel through the peerApi::remoteTorrentReceived
+    // handler.
     filesWidget->setTorrent(torrent);
     filesWidget->show();
     verticalSplitter->setSizes({ 600, 200 });
@@ -969,7 +1455,7 @@ void MainWindow::onDownloadRequested(const QString& hash)
         qInfo() << "Starting download:" << hash.left(16) << "to:" << downloadPath;
         bool ok = app_->downloads()->add(hash, downloadPath);
         if (ok) {
-            statusBar()->showMessage(tr("⬇️ Download started"), 2000);
+            showStatusMessage(tr("⬇️ Download started"), 2000);
             if (detailsPanel && detailsPanel->currentHash() == hash)
                 detailsPanel->setDownloadProgress(0.0, 0, 0, 0);
         } else {
@@ -992,7 +1478,7 @@ void MainWindow::showTorrentContextMenu(const QPoint& pos)
 
     QMenu contextMenu(this);
     rats::ui::addTorrentActions(
-        &contextMenu, this, torrent, [this](const QString& message) { statusBar()->showMessage(message, 2000); });
+        &contextMenu, this, torrent, [this](const QString& message) { showStatusMessage(message, 2000); });
 
     contextMenu.addSeparator();
 
@@ -1002,13 +1488,13 @@ void MainWindow::showTorrentContextMenu(const QPoint& pos)
             QAction* removeFavAction = contextMenu.addAction(tr("★ Remove from Favorites"));
             connect(removeFavAction, &QAction::triggered, [this, torrent]() {
                 app_->favorites()->remove(torrent.hash);
-                statusBar()->showMessage(tr("Removed from favorites"), 2000);
+                showStatusMessage(tr("Removed from favorites"), 2000);
             });
         } else {
             QAction* addFavAction = contextMenu.addAction(tr("⭐ Add to Favorites"));
             connect(addFavAction, &QAction::triggered, [this, torrent]() {
                 addToFavorites(torrent);
-                statusBar()->showMessage(tr("Added to favorites: %1").arg(torrent.name), 2000);
+                showStatusMessage(tr("Added to favorites: %1").arg(torrent.name), 2000);
             });
         }
     }
@@ -1062,7 +1548,7 @@ void MainWindow::onExportReady(const QString& hash, const QString& name, const Q
         QMessageBox::critical(this, tr("Export Torrent"), tr("Failed to save torrent to:\n%1").arg(destination));
         return;
     }
-    statusBar()->showMessage(tr("Torrent exported to %1").arg(destination), 4000);
+    showStatusMessage(tr("Torrent exported to %1").arg(destination), 4000);
 }
 
 void MainWindow::onMigrationProgress(const QString& migrationId, qint64 current, qint64 total)
@@ -1071,14 +1557,13 @@ void MainWindow::onMigrationProgress(const QString& migrationId, qint64 current,
     // Pull the human-readable description from the service (thread-safe).
     const auto progress = app_->migrations()->currentProgress();
     const QString what = progress.description.isEmpty() ? tr("Migrating data") : progress.description;
-    // Shown on the left message area; the permanent peer/count widgets on the
-    // right are unaffected. 0 = persist until the next progress tick /
-    // completion.
+    // Shown in the dedicated message slot; the peer/DHT/torrent counters are
+    // unaffected. 0 = persist until the next progress tick / completion.
     if (total > 0) {
         const int percent = static_cast<int>((current * 100) / total);
-        statusBar()->showMessage(tr("%1: %2 / %3 (%4%)").arg(what).arg(current).arg(total).arg(percent), 0);
+        showStatusMessage(tr("%1: %2 / %3 (%4%)").arg(what).arg(current).arg(total).arg(percent), 0);
     } else {
-        statusBar()->showMessage(tr("%1…").arg(what), 0);
+        showStatusMessage(tr("%1…").arg(what), 0);
     }
 }
 
@@ -1105,9 +1590,14 @@ void MainWindow::refreshP2PStatus()
     paintP2PIndicator();
 }
 
-void MainWindow::onSpiderStatusChanged(const QString& status)
+void MainWindow::refreshSpiderStatus()
 {
-    spiderStatusLabel->setText(tr("🕷️ Spider: %1").arg(status));
+    // Read the crawler's live state instead of latching onto its statusChanged
+    // signal: Application::start() runs before MainWindow exists, so the initial
+    // "Active" is emitted with nobody connected yet.
+    auto* crawler = app_ ? app_->crawler() : nullptr;
+    const bool running = crawler && crawler->isRunning();
+    spiderStatusLabel->setText(tr("🕷️ Spider: %1").arg(running ? tr("Active") : tr("Stopped")));
 }
 
 void MainWindow::paintP2PIndicator()
@@ -1139,17 +1629,19 @@ void MainWindow::updateNetworkStatus()
     if (transport && transport->isRunning()) {
         size_t dhtNodes = transport->dhtNodeCount();
         if (transport->isDhtRunning())
-            dhtNodeCountLabel->setText(tr("🌐 DHT: %1 nodes").arg(dhtNodes));
+            dhtNodeCountLabel->setText(tr("🌐 DHT: %n node(s)", nullptr, static_cast<int>(dhtNodes)));
         else
             dhtNodeCountLabel->setText(tr("🌐 DHT: Offline"));
     } else if (p2pState_ != P2PState::NotStarted) {
         dhtNodeCountLabel->setText(tr("🌐 DHT: Offline"));
     }
+
+    refreshSpiderStatus();
 }
 
 void MainWindow::onTorrentIndexed(const Torrent& torrent)
 {
-    statusBar()->showMessage(tr("📥 Indexed: %1").arg(torrent.name), 2000);
+    showStatusMessage(tr("📥 Indexed: %1").arg(torrent.name), 2000);
     // The torrent count follows the repository's statisticsChanged signal, and
     // tracker checks are driven by TrackerService (wired inside Application), so
     // nothing else to do here.
@@ -1358,7 +1850,7 @@ void MainWindow::addTorrentFile()
             QString name = data["name"].toString();
             bool alreadyExists = data["alreadyExists"].toBool();
 
-            statusBar()->showMessage(
+            showStatusMessage(
                 alreadyExists ? tr("Torrent already in index: %1").arg(name) : tr("Added to index: %1").arg(name),
                 3000);
 
@@ -1423,6 +1915,7 @@ void MainWindow::createTorrent()
     layout->addWidget(trackersLabel);
 
     QTextEdit* trackersEdit = new QTextEdit();
+    trackersEdit->setObjectName("monoEdit"); // one URL per line reads better fixed-width
     trackersEdit->setPlaceholderText("udp://tracker.example.com:6969/announce\nhttp://tracker2.example.com/"
                                      "announce");
     trackersEdit->setMaximumHeight(80);
@@ -1517,6 +2010,178 @@ void MainWindow::createTorrent()
 }
 
 // ============================================================================
+// Whole-database replication
+// ============================================================================
+
+QString MainWindow::databaseSyncStatusText(const QJsonObject& info) const
+{
+    const QString stage = info["stage"].toString();
+    const qint64 processed = info["processed"].toVariant().toLongLong();
+    const qint64 total = info["total"].toVariant().toLongLong();
+    const qint64 bytes = info["bytes"].toVariant().toLongLong();
+    const qint64 totalBytes = info["totalBytes"].toVariant().toLongLong();
+
+    if (stage == QLatin1String("transferring")) {
+        // Worth saying out loud: a pull that broke at 6 of 9 GB shows 66% from its
+        // first second, and without a word for it that reads like a stuck transfer.
+        const bool continued = info["resumedFrom"].toVariant().toLongLong() > 0;
+        if (totalBytes > 0) {
+            return (continued ? tr("Continuing database transfer: %1 / %2 (%3%)")
+                              : tr("Transferring database: %1 / %2 (%3%)"))
+                .arg(rats::ui::formatSize(bytes), rats::ui::formatSize(totalBytes))
+                .arg((bytes * 100) / totalBytes);
+        }
+        return (continued ? tr("Continuing database transfer: %1") : tr("Transferring database: %1"))
+            .arg(rats::ui::formatSize(bytes));
+    }
+    if (stage == QLatin1String("waiting") || stage == QLatin1String("preparing"))
+        return tr("Waiting for the peer to prepare its database…");
+
+    const QString what = stage == QLatin1String("exporting") ? tr("Exporting database") : tr("Importing database");
+    if (total > 0)
+        return tr("%1: %2 / %3 (%4%)").arg(what).arg(processed).arg(total).arg((processed * 100) / total);
+    return tr("%1: %n torrent(s)", nullptr, static_cast<int>(processed)).arg(what);
+}
+
+QString MainWindow::databaseServeStatusText(const QJsonObject& info) const
+{
+    const int sending = info["sending"].toInt();
+    const int waiting = info["waiting"].toInt();
+
+    if (info["generating"].toBool()) {
+        const qint64 processed = info["processed"].toVariant().toLongLong();
+        const qint64 total = info["total"].toVariant().toLongLong();
+        if (total > 0) {
+            return tr("Preparing the database for %n peer(s): %1%", nullptr, qMax(1, waiting))
+                .arg((processed * 100) / total);
+        }
+        return tr("Preparing the database for %n peer(s)...", nullptr, qMax(1, waiting));
+    }
+    if (sending > 0)
+        return tr("Sharing the database with %n peer(s)...", nullptr, sending);
+    // Nothing to say: leave whatever the user's own operation put there.
+    return QString();
+}
+
+void MainWindow::exportDatabase()
+{
+    if (!app_->api())
+        return;
+
+    const QString suggested = QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation))
+                                  .absoluteFilePath(QStringLiteral("rats-index-%1.ratsdb")
+                                          .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd"))));
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Database"), suggested, tr("Rats Database (*.ratsdb);;All Files (*)"));
+    if (path.isEmpty())
+        return;
+
+    app_->api()->call("database.export", QJsonObject { { "path", path } }, [this](const Result& response) {
+        if (!response.ok()) {
+            QMessageBox::warning(
+                this, tr("Export Database"), tr("Could not start the export.\n\n%1").arg(response.error()));
+        }
+        // Progress and the final summary arrive through the sync service signals
+        // wired in the constructor.
+    });
+}
+
+void MainWindow::importDatabase()
+{
+    if (!app_->api())
+        return;
+
+    const QString path = QFileDialog::getOpenFileName(this, tr("Import Database"),
+        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation),
+        tr("Rats Database (*.ratsdb);;All Files (*)"));
+    if (path.isEmpty())
+        return;
+
+    // Importing merges — nothing local is replaced — but a foreign index can be
+    // huge and carry content this user filters out, so both facts are stated
+    // before it starts.
+    QMessageBox confirm(this);
+    confirm.setIcon(QMessageBox::Question);
+    confirm.setWindowTitle(tr("Import Database"));
+    confirm.setText(tr("Merge this database into your index?"));
+    confirm.setInformativeText(
+        tr("Torrents you already have are kept; only new ones are added.\n\n%1").arg(QFileInfo(path).fileName()));
+    confirm.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+    confirm.setDefaultButton(QMessageBox::Yes);
+
+    QCheckBox* filterBox = new QCheckBox(tr("Apply my content filters to the imported torrents"), &confirm);
+    filterBox->setChecked(true);
+    confirm.setCheckBox(filterBox);
+
+    if (confirm.exec() != QMessageBox::Yes)
+        return;
+
+    app_->api()->call("database.import", QJsonObject { { "path", path }, { "applyFilters", filterBox->isChecked() } },
+        [this](const Result& response) {
+            if (!response.ok()) {
+                QMessageBox::warning(
+                    this, tr("Import Database"), tr("Could not start the import.\n\n%1").arg(response.error()));
+            }
+        });
+}
+
+void MainWindow::pullDatabaseFromPeer()
+{
+    if (!app_->api())
+        return;
+
+    // database.peers, not peers.list: a peer that does not share its database can
+    // only answer with a refusal, so offering it as a choice would be a dead end.
+    app_->api()->call("database.peers", QJsonObject {}, [this](const Result& response) {
+        if (!response.ok()) {
+            QMessageBox::warning(this, tr("Download Database"), response.error());
+            return;
+        }
+
+        const QJsonArray peers = response.data().toArray();
+        if (peers.isEmpty()) {
+            QMessageBox::information(this, tr("Download Database"),
+                tr("None of the connected peers is sharing its database.\n\n"
+                   "Sharing is something each user enables for themselves, and older clients do not support "
+                   "it at all. Try again later, or import a database file instead."));
+            return;
+        }
+
+        // Label each peer with what it claims to hold, so the choice is informed
+        // rather than a list of hex ids.
+        QStringList labels;
+        QStringList ids;
+        for (const QJsonValue& value : peers) {
+            const QJsonObject peer = value.toObject();
+            const QString id = peer["peerId"].toString();
+            const qint64 torrents = peer["torrents"].toVariant().toLongLong();
+            ids << id;
+            labels << tr("%1… — %n torrent(s) (%2)", nullptr, static_cast<int>(torrents))
+                          .arg(id.left(12))
+                          .arg(peer["clientVersion"].toString());
+        }
+
+        bool accepted = false;
+        const QString chosen = QInputDialog::getItem(
+            this, tr("Download Database"), tr("Ask which peer for its whole index?"), labels, 0, false, &accepted);
+        if (!accepted || chosen.isEmpty())
+            return;
+
+        const int index = labels.indexOf(chosen);
+        if (index < 0)
+            return;
+
+        app_->api()->call("database.pull", QJsonObject { { "peer", ids.at(index) } }, [this](const Result& result) {
+            if (!result.ok()) {
+                QMessageBox::warning(
+                    this, tr("Download Database"), tr("Could not ask the peer.\n\n%1").arg(result.error()));
+            }
+        });
+    });
+}
+
+// ============================================================================
 // System tray
 // ============================================================================
 
@@ -1574,14 +2239,37 @@ void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason)
 
 void MainWindow::toggleWindowVisibility()
 {
-    if (isVisible() && !isMinimized()) {
+    if (isVisible() && !isMinimized())
         hide();
-    } else {
-        show();
-        setWindowState(windowState() & ~Qt::WindowMinimized);
-        activateWindow();
-        raise();
+    else
+        bringToFront();
+}
+
+void MainWindow::bringToFront()
+{
+    show();
+    setWindowState(windowState() & ~Qt::WindowMinimized);
+    activateWindow();
+    raise();
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event)
+{
+    // Clicking (or tabbing into) an empty search field shows the recent
+    // queries, the way a browser address bar does. The popup is deferred to the
+    // next event-loop turn: opening it from inside the press handler would let
+    // the very same click close it again.
+    if (watched == searchLineEdit && searchLineEdit->text().isEmpty()) {
+        bool wantsHistory = event->type() == QEvent::MouseButtonPress;
+        // Only *deliberate* keyboard navigation counts — the search field also
+        // takes focus when the window opens, and greeting the user with a
+        // dropdown at launch is not what they asked for.
+        if (event->type() == QEvent::FocusIn)
+            wantsHistory = static_cast<QFocusEvent*>(event)->reason() == Qt::TabFocusReason;
+        if (wantsHistory)
+            QTimer::singleShot(0, this, &MainWindow::showSearchHistoryPopup);
     }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::changeEvent(QEvent* event)
@@ -1638,7 +2326,7 @@ void MainWindow::checkForUpdates()
         return;
     auto* updates = app_->updates();
 
-    statusBar()->showMessage(tr("Checking for updates..."), 3000);
+    showStatusMessage(tr("Checking for updates..."), 3000);
 
     disconnect(updates, &UpdateService::noUpdateAvailable, nullptr, nullptr);
 
@@ -1765,7 +2453,7 @@ void MainWindow::onUpdateAvailable(const QString& version, const QString& releas
 
 void MainWindow::onUpdateDownloadProgress(int percent)
 {
-    statusBar()->showMessage(tr("Downloading update: %1%").arg(percent), 1000);
+    showStatusMessage(tr("Downloading update: %1%").arg(percent), 1000);
 }
 
 void MainWindow::onUpdateReady()
@@ -1781,16 +2469,27 @@ void MainWindow::onUpdateReady()
     if (reply == QMessageBox::Yes) {
         qInfo() << "User accepted update installation, preparing to restart...";
         saveSettings();
-        // executeUpdateScript() launches the external updater and quits the app;
-        // main()'s aboutToQuit → app_->stop() releases the database/searchd locks.
-        if (app_->updates())
-            app_->updates()->executeUpdateScript();
+
+        // The service only launches the external updater; shutting the app down
+        // is the frontend's job. Bail out if it failed to start so we don't close
+        // the app with no updater running.
+        if (!app_->updates() || !app_->updates()->executeUpdateScript())
+            return;
+
+        // From here the shutdown is non-negotiable: mark it so closeEvent() stops
+        // prompting or hiding to tray. closeAllWindows() then tears every window
+        // down — including any nested modal loop (e.g. the download dialog still
+        // in exec()) — and each window's closeEvent drives the actual quit.
+        // main()'s exec() returns and app_->stop() releases the database/searchd
+        // locks; the updater, blocked waiting for us to exit, then proceeds.
+        updateInstalling_ = true;
+        QApplication::closeAllWindows();
     }
 }
 
 void MainWindow::onUpdateError(const QString& error)
 {
-    statusBar()->showMessage(tr("Update error: %1").arg(error), 5000);
+    showStatusMessage(tr("Update error: %1").arg(error), 5000);
 }
 
 // ============================================================================
@@ -1865,13 +2564,9 @@ bool MainWindow::showAgreementDialog()
     dialog.setMinimumSize(700, 600);
     dialog.setModal(true);
 
-    if (config && config->darkMode()) {
-        QFile styleFile(":/styles/styles/dark.qss");
-        if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            dialog.setStyleSheet(QString::fromUtf8(styleFile.readAll()));
-            styleFile.close();
-        }
-    }
+    // Shown before MainWindow is styled, so it cannot inherit a sheet.
+    rats::ui::Theme::instance().setDark(config && config->darkMode());
+    dialog.setStyleSheet(rats::ui::Theme::instance().styleSheet());
 
     QVBoxLayout* layout = new QVBoxLayout(&dialog);
     layout->setSpacing(16);

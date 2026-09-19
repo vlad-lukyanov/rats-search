@@ -1,7 +1,10 @@
 #include "net/swarm_scraper.h"
 
 #include <QDebug>
-#include <QtConcurrent>
+
+#include <atomic>
+#include <functional>
+#include <memory>
 
 // librats' BitTorrent headers use `emit`/`slots`/`signals` as ordinary
 // identifiers, which collide with Qt's keyword macros — neutralise them across
@@ -12,8 +15,8 @@
 #undef emit
 #undef slots
 #undef signals
-#include "bittorrent/tracker.h"
-#include "bittorrent/types.h"
+#include "librats/bittorrent/tracker.h"
+#include "librats/bittorrent/types.h"
 #pragma pop_macro("signals")
 #pragma pop_macro("slots")
 #pragma pop_macro("emit")
@@ -49,10 +52,20 @@ struct AnnounceResult {
     QString error;
 };
 
+// Shared state for one hash's parallel tracker announces. Each tracker runs as
+// its own pool task; they merge into `best` under `mutex` and the task that
+// drops `remaining` to zero reports the aggregate back on the object thread.
+struct ScrapeState {
+    QMutex mutex;
+    AnnounceResult best;
+    std::atomic<int> remaining { 0 };
+};
+
 // Announce to a single tracker to read the torrent's seeder/leecher counts. An
 // announce with numwant=0 doubles as a scrape: the tracker still reports the
 // swarm counts (BEP 3 complete/incomplete, BEP 15 seeders/leechers).
-AnnounceResult announceOne(const std::string& url, const std::string& hashHex, int timeoutMs)
+AnnounceResult announceOne(
+    const std::string& url, const std::string& hashHex, int timeoutMs, const std::function<bool()>& cancelled)
 {
     AnnounceResult result;
 
@@ -70,7 +83,7 @@ AnnounceResult announceOne(const std::string& url, const std::string& hashHex, i
     req.left = 0;
     req.numwant = 0; // counts only, no peer list
 
-    bt::TrackerResponse resp = bt::announce_to_tracker(url, req, timeoutMs);
+    bt::TrackerResponse resp = bt::announce_to_tracker(url, req, timeoutMs, cancelled);
     if (resp.success) {
         result.success = true;
         result.seeders = static_cast<int>(resp.complete);
@@ -92,13 +105,34 @@ SwarmScraper::SwarmScraper(QObject* parent) : QObject(parent), activeRequests_(0
     queueTimer_ = new QTimer(this);
     queueTimer_->setInterval(kQueuePollIntervalMs);
     connect(queueTimer_, &QTimer::timeout, this, &SwarmScraper::processQueue);
+
+    // Sized to run a hash's trackers concurrently (plus some cross-hash overlap).
+    // The tasks are blocking UDP announces (I/O-bound, not CPU-bound), so a cap
+    // above the core count is fine; it just bounds how many sockets wait at once.
+    threadPool_.setMaxThreadCount(kMaxPoolThreads);
 }
 
 SwarmScraper::~SwarmScraper()
 {
+    stop();
+}
+
+void SwarmScraper::stop()
+{
+    stopping_.store(true);
     if (queueTimer_) {
         queueTimer_->stop();
     }
+    {
+        QMutexLocker locker(&queueMutex_);
+        pendingQueue_.clear();
+    }
+    // Drop tasks that have not started yet, then wait for the running announces to
+    // finish. In-flight tasks check stopping_ before each announce, so they bail
+    // after at most the announce already in progress rather than walking every
+    // remaining tracker. Waiting here guarantees no pool task outlives `this`.
+    threadPool_.clear();
+    threadPool_.waitForDone();
 }
 
 // ============================================================================
@@ -107,6 +141,10 @@ SwarmScraper::~SwarmScraper()
 
 void SwarmScraper::requestScrape(const QString& infoHash, const QStringList& trackers)
 {
+    if (stopping_.load()) {
+        return; // shutting down — accept no new work
+    }
+
     if (infoHash.length() != kInfoHashHexLength) {
         qWarning() << "SwarmScraper: ignoring invalid info-hash" << infoHash;
         return;
@@ -172,6 +210,10 @@ void SwarmScraper::pruneStaleChecks(const QDateTime& now)
 
 void SwarmScraper::processQueue()
 {
+    if (stopping_.load()) {
+        return;
+    }
+
     QMutexLocker locker(&queueMutex_);
 
     // Drain as many queued requests as the concurrency cap allows.
@@ -195,39 +237,61 @@ void SwarmScraper::startScrape(const QString& infoHash, const QStringList& track
     const std::string hashStd = infoHash.toStdString();
     const int timeout = kTimeoutMs;
 
-    // Run the blocking announces off the Qt thread pool.
-    // (void) suppresses the [[nodiscard]] warning on the unused QFuture.
-    (void)QtConcurrent::run([this, infoHash, trackers, hashStd, timeout]() {
-        // Announce to each tracker and keep the best (highest seeder count)
-        // successful result — different trackers see different slices of the swarm.
-        AnnounceResult best;
-        for (const QString& trackerUrl : trackers) {
-            AnnounceResult one = announceOne(trackerUrl.toStdString(), hashStd, timeout);
-            if (one.success && (!best.success || one.seeders > best.seeders)) {
-                best = one;
-            }
-        }
+    // A hash's trackers announce in parallel (each its own pool task) rather than
+    // walking them one-by-one: different trackers see different swarm slices, and
+    // parallelising caps a hash's latency at ~one announce round instead of
+    // trackers × timeout. They merge into a shared best-result; the last one to
+    // finish reports back on this object's thread and frees the hash's slot.
+    auto state = std::make_shared<ScrapeState>();
+    state->remaining.store(static_cast<int>(trackers.size()));
 
-        // Return to this object's thread to update state and emit.
-        QMetaObject::invokeMethod(
-            this,
-            [this, infoHash, best]() {
-                {
-                    QMutexLocker locker(&queueMutex_);
-                    if (activeRequests_ > 0) {
-                        activeRequests_--;
+    for (const QString& trackerUrl : trackers) {
+        const std::string url = trackerUrl.toStdString();
+        threadPool_.start([this, infoHash, state, url, hashStd, timeout]() {
+            // Skip the (blocking) announce entirely once shutdown starts, so a
+            // stop() drains the pool promptly instead of firing every tracker.
+            // The cancel predicate also aborts an announce already in progress
+            // within ~one poll slice, so waitForDone() in stop() returns fast.
+            if (!stopping_.load()) {
+                AnnounceResult one = announceOne(url, hashStd, timeout, [this] { return stopping_.load(); });
+                if (one.success) {
+                    QMutexLocker locker(&state->mutex);
+                    if (!state->best.success || one.seeders > state->best.seeders) {
+                        state->best = one;
                     }
                 }
+            }
 
-                if (best.success) {
-                    emit scraped(infoHash, best.seeders, best.leechers, best.completed);
-                }
+            // Last tracker for this hash done → aggregate and report back.
+            if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+                return;
+            }
 
-                // Give any queued requests a chance to start now that a slot freed.
-                processQueue();
-            },
-            Qt::QueuedConnection);
-    });
+            AnnounceResult best;
+            {
+                QMutexLocker locker(&state->mutex);
+                best = state->best;
+            }
+            QMetaObject::invokeMethod(
+                this,
+                [this, infoHash, best]() {
+                    {
+                        QMutexLocker locker(&queueMutex_);
+                        if (activeRequests_ > 0) {
+                            activeRequests_--;
+                        }
+                    }
+
+                    if (best.success) {
+                        emit scraped(infoHash, best.seeders, best.leechers, best.completed);
+                    }
+
+                    // Give any queued requests a chance to start now that a slot freed.
+                    processQueue();
+                },
+                Qt::QueuedConnection);
+        });
+    }
 }
 
 } // namespace rats::net

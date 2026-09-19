@@ -1,6 +1,8 @@
 #ifndef RATS_APP_CONFIG_STORE_H
 #define RATS_APP_CONFIG_STORE_H
 
+#include "services/filter_policy.h"
+
 #include <QJsonObject>
 #include <QObject>
 #include <QVariant>
@@ -79,6 +81,24 @@ public:
     bool p2pReplicationServer() const;
     void setP2pReplicationServer(bool enabled);
 
+    // Whether other peers may pull our whole index (databaseRequest). On by
+    // default, like the rest of the replication machinery — a swarm where nobody
+    // serves cannot replicate at all. It is also advertised in the client_info
+    // handshake, so peers only ever offer each other partners that will say yes.
+    bool databaseSharing() const;
+    void setDatabaseSharing(bool enabled);
+
+    // When the dump we serve to peers is rebuilt. It is generated once and handed
+    // to every peer that asks, so these two decide how stale a served index may be
+    // — and, on the other side, how often this node spends a full export.
+    //
+    // Age is the backstop; drift is the real trigger, because an index that has
+    // not moved does not need a new dump however old the one on disk is.
+    int databaseSnapshotMaxAgeHours() const;
+    void setDatabaseSnapshotMaxAgeHours(int hours);
+    int databaseSnapshotMaxDriftPercent() const;
+    void setDatabaseSnapshotMaxDriftPercent(int percent);
+
     // =========================================================================
     // Indexer Settings
     // =========================================================================
@@ -95,6 +115,18 @@ public:
     // Config-file only: read at startup to gate UPnP/NAT-PMP port mapping. There
     // is deliberately no setter — nothing in the app changes it at runtime.
     bool upnpEnabled() const;
+
+    // Config-file only, same shape: gates NAT hole punching (and relaying other
+    // peers' rendezvous), the fallback for networks where port mapping fails.
+    bool holePunchEnabled() const;
+
+    // Config-file only, same shape: the rung below punching — reach a peer
+    // through a third node both ends already hold when no punch can land.
+    bool relayEnabled() const;
+
+    // Config-file only: carry OTHER peers' circuits. Off by default — unlike a
+    // hole-punch rendezvous, this spends real uplink on somebody else's traffic.
+    bool relayServeEnabled() const;
 
     // =========================================================================
     // Spider Settings
@@ -128,6 +160,12 @@ public:
     QString filtersContentType() const;
     void setFiltersContentType(const QString& type);
 
+    // The stored filter keys as one struct, ready for service::FilterPolicy.
+    // Application::applyConfig() and the `torrent.cleanup` API method both go
+    // through this, so a sweep judges torrents with exactly the rules the
+    // indexer applies to new ones.
+    service::FilterSettings filterSettings() const;
+
     // =========================================================================
     // Client Settings
     // =========================================================================
@@ -145,6 +183,18 @@ public:
     bool darkMode() const;
     void setDarkMode(bool enabled);
 
+    // Search-time adult filter: hides the XXX category from search results. This
+    // is distinct from filters.adultFilter, which drops adult torrents at index
+    // time and so cannot be undone by toggling it back off.
+    bool safeSearch() const;
+    void setSafeSearch(bool enabled);
+
+    // Whether user-initiated searches are remembered in app::SearchHistoryStore.
+    // Turning it off stops new queries from being recorded; already-stored ones
+    // stay until the user clears the history explicitly.
+    bool searchHistoryEnabled() const;
+    void setSearchHistoryEnabled(bool enabled);
+
     bool trayOnClose() const;
     void setTrayOnClose(bool enabled);
 
@@ -159,6 +209,17 @@ public:
 
     bool agreementAccepted() const;
     void setAgreementAccepted(bool accepted);
+
+    // =========================================================================
+    // Logging
+    // =========================================================================
+
+    // Total disk budget for rats-search.log and its rotated archives, in MB.
+    // Applied through common::applyLogSizeBudget() from Application::applyConfig(),
+    // so a change takes effect on the running logger without a restart. Clamped
+    // to [common::kMinLogMaxSizeMb, common::kMaxLogMaxSizeMb].
+    int logMaxSizeMb() const;
+    void setLogMaxSizeMb(int megabytes);
 
     // =========================================================================
     // Generic Access (for API)

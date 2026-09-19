@@ -189,6 +189,7 @@ bool ApiServer::start(int httpPort, int wsPort)
         }
 
         qInfo() << "HTTP API server listening on port" << httpServer_->serverPort();
+        httpPort_ = httpServer_->serverPort();
     }
 
     // ---- WebSocket server ----
@@ -226,6 +227,7 @@ bool ApiServer::start(int httpPort, int wsPort)
         }
 
         qInfo() << "WebSocket server listening on port" << wsServer_->serverPort();
+        wsPort_ = wsServer_->serverPort();
     }
 
     running_ = true;
