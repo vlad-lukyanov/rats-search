@@ -473,6 +473,14 @@ jobs:
           echo "Copied Manticore binaries:"
           ls -la "$BUNDLE_DIR/"
 
+      - name: Re-sign bundle
+        # The Manticore binaries copied in above weren't in macdeployqt's sealed
+        # resource manifest, so Gatekeeper rejects the download with "app is
+        # damaged". Re-seal the whole bundle ad-hoc after all files are in place.
+        # Note: the Intel job (build-macos-intel) has the same pattern and likely
+        # needs the same fix, but is left untouched here -- unverified on this branch.
+        run: codesign --force --deep --sign - build/bin/RatsSearch.app
+
       - name: Get version
         id: version
         run: |
