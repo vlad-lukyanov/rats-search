@@ -225,14 +225,14 @@ jobs:
           Get-ChildItem "installer\*.exe" | ForEach-Object { Write-Host $_.Name }
 
       - name: Upload artifact (ZIP)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: RatsSearch-Windows-x64-zip
           path: RatsSearch-Windows-x64-*.zip
           retention-days: 30
 
       - name: Upload artifact (Installer)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: RatsSearch-Windows-x64-setup
           path: installer/RatsSearch-Windows-x64-*-setup.exe
@@ -363,7 +363,7 @@ jobs:
           ls -la "$DMG_NAME"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: RatsSearch-macOS-Intel
           path: RatsSearch-macOS-Intel-*.dmg
@@ -514,7 +514,7 @@ jobs:
           ls -la "$DMG_NAME"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: RatsSearch-macOS-ARM
           path: RatsSearch-macOS-ARM-*.dmg
@@ -798,7 +798,7 @@ jobs:
           fi
 
       - name: Upload artifact (AppImage)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: hashFiles('RatsSearch-Linux-x64-*.AppImage') != ''
         with:
           name: RatsSearch-Linux-x64-AppImage
@@ -806,7 +806,7 @@ jobs:
           retention-days: 30
 
       - name: Upload artifact (tar.gz)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: hashFiles('RatsSearch-Linux-x64-*.tar.gz') != ''
         with:
           name: RatsSearch-Linux-x64
