@@ -183,6 +183,20 @@ public:
     bool darkMode() const;
     void setDarkMode(bool enabled);
 
+    // Interface font. The family is put in front of the theme's own font stack
+    // (empty = the theme's stack as is); the scale multiplies every font size in
+    // the stylesheet, in percent, clamped to [kMinUiFontScale, kMaxUiFontScale].
+    // Both are applied by ui::Theme the moment they change, no restart.
+    static constexpr int kMinUiFontScale = 50;
+    static constexpr int kMaxUiFontScale = 200;
+    static constexpr int kDefaultUiFontScale = 100;
+
+    QString uiFontFamily() const;
+    void setUiFontFamily(const QString& family);
+
+    int uiFontScale() const;
+    void setUiFontScale(int percent);
+
     // Search-time adult filter: hides the XXX category from search results. This
     // is distinct from filters.adultFilter, which drops adult torrents at index
     // time and so cannot be undone by toggling it back off.

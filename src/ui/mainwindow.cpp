@@ -169,8 +169,16 @@ MainWindow::~MainWindow()
 
 void MainWindow::applyTheme(bool darkMode)
 {
-    rats::ui::Theme::instance().setDark(darkMode);
-    setStyleSheet(rats::ui::Theme::instance().styleSheet());
+    rats::ui::Theme& theme = rats::ui::Theme::instance();
+    if (rats::app::ConfigStore* config = app_->config()) {
+        theme.setFont(config->uiFontFamily(), config->uiFontScale());
+    }
+    theme.setDark(darkMode);
+    setStyleSheet(theme.styleSheet());
+    // The tray menu is a top-level window that copied the sheet once.
+    if (trayMenu) {
+        trayMenu->setStyleSheet(styleSheet());
+    }
 }
 
 void MainWindow::setupUi()
@@ -524,8 +532,15 @@ void MainWindow::connectSignals()
 
     // Immediate settings application.
     // Language changes are handled by Application, which owns the translators.
-    if (app_->config())
-        connect(app_->config(), &rats::app::ConfigStore::darkModeChanged, this, &MainWindow::onDarkModeChanged);
+    if (rats::app::ConfigStore* config = app_->config()) {
+        connect(config, &rats::app::ConfigStore::darkModeChanged, this, &MainWindow::onDarkModeChanged);
+        connect(config, &rats::app::ConfigStore::configChanged, this, [this, config](const QStringList& keys) {
+            if (keys.contains(QStringLiteral("uiFontFamily")) || keys.contains(QStringLiteral("uiFontScale"))) {
+                qInfo() << "Interface font changed to" << config->uiFontFamily() << config->uiFontScale() << "%";
+                applyTheme(config->darkMode());
+            }
+        });
+    }
 }
 
 void MainWindow::connectSearchSignals()
@@ -2693,6 +2708,9 @@ bool MainWindow::showAgreementDialog()
     dialog.setModal(true);
 
     // Shown before MainWindow is styled, so it cannot inherit a sheet.
+    if (config) {
+        rats::ui::Theme::instance().setFont(config->uiFontFamily(), config->uiFontScale());
+    }
     rats::ui::Theme::instance().setDark(config && config->darkMode());
     dialog.setStyleSheet(rats::ui::Theme::instance().styleSheet());
 

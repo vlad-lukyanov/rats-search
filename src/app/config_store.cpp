@@ -17,10 +17,13 @@ namespace {
 constexpr int kMinP2pConnections = 10;
 constexpr int kMaxP2pConnections = 1000;
 
-// The only key with a valid range. Applied on every write and again after a
-// load, so an out-of-range value can never reach the services.
+// The keys with a valid range. Applied on every write and again after a load,
+// so an out-of-range value can never reach the services.
 QVariant clampToRange(const QString& key, const QVariant& value)
 {
+    if (key == QLatin1String("uiFontScale")) {
+        return qBound(ConfigStore::kMinUiFontScale, value.toInt(), ConfigStore::kMaxUiFontScale);
+    }
     if (key == QLatin1String("p2pConnections")) {
         return qBound(kMinP2pConnections, value.toInt(), kMaxP2pConnections);
     }
@@ -75,9 +78,9 @@ void ConfigStore::setDefaults()
         { "downloadPath", QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) },
 
         // UI
-        { "language", "en" }, { "darkMode", false }, { "safeSearch", false }, { "searchHistory", true },
-        { "trayOnClose", false }, { "trayOnMinimize", true }, { "startMinimized", false },
-        { "confirmExit", true }, { "checkUpdatesOnStartup", true },
+        { "language", "en" }, { "darkMode", false }, { "uiFontFamily", "" }, { "uiFontScale", kDefaultUiFontScale },
+        { "safeSearch", false }, { "searchHistory", true }, { "trayOnClose", false }, { "trayOnMinimize", true },
+        { "startMinimized", false }, { "confirmExit", true }, { "checkUpdatesOnStartup", true },
 
         // Legal
         { "agreementAccepted", false },
@@ -154,6 +157,8 @@ void ConfigStore::validateAndClamp()
         = QJsonValue::fromVariant(clampToRange("p2pConnections", config_["p2pConnections"].toInt()));
     config_["logMaxSizeMb"] = QJsonValue::fromVariant(
         clampToRange("logMaxSizeMb", config_["logMaxSizeMb"].toInt(common::kDefaultLogMaxSizeMb)));
+    config_["uiFontScale"]
+        = QJsonValue::fromVariant(clampToRange("uiFontScale", config_["uiFontScale"].toInt(kDefaultUiFontScale)));
 
     // Replication needs the replication server. The typed setters keep this
     // invariant on writes; this repairs a config file edited by hand.
@@ -465,6 +470,24 @@ bool ConfigStore::darkMode() const
 void ConfigStore::setDarkMode(bool enabled)
 {
     setValue("darkMode", enabled);
+}
+
+QString ConfigStore::uiFontFamily() const
+{
+    return config_["uiFontFamily"].toString();
+}
+void ConfigStore::setUiFontFamily(const QString& family)
+{
+    setValue("uiFontFamily", family.trimmed());
+}
+
+int ConfigStore::uiFontScale() const
+{
+    return config_["uiFontScale"].toInt(kDefaultUiFontScale);
+}
+void ConfigStore::setUiFontScale(int percent)
+{
+    setValue("uiFontScale", percent);
 }
 
 bool ConfigStore::safeSearch() const
