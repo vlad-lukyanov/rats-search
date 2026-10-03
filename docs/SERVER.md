@@ -44,6 +44,7 @@ The configuration file `rats.json` is created in the data directory:
     "darkMode": true,
     "trayOnMinimize": true,
     "trayOnClose": false,
+    "confirmExit": true,
     "startMinimized": false
 }
 ```
@@ -59,6 +60,7 @@ The configuration file `rats.json` is created in the data directory:
 | `darkMode` | bool | true | Use dark theme |
 | `trayOnMinimize` | bool | true | Hide to tray on minimize |
 | `trayOnClose` | bool | false | Hide to tray on close |
+| `confirmExit` | bool | true | Ask for confirmation before quitting the GUI |
 | `startMinimized` | bool | false | Start minimized to tray |
 
 ---

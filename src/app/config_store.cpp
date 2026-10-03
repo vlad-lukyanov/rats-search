@@ -77,7 +77,7 @@ void ConfigStore::setDefaults()
         // UI
         { "language", "en" }, { "darkMode", false }, { "safeSearch", false }, { "searchHistory", true },
         { "trayOnClose", false }, { "trayOnMinimize", true }, { "startMinimized", false },
-        { "checkUpdatesOnStartup", true },
+        { "confirmExit", true }, { "checkUpdatesOnStartup", true },
 
         // Legal
         { "agreementAccepted", false },
@@ -492,6 +492,15 @@ bool ConfigStore::trayOnClose() const
 void ConfigStore::setTrayOnClose(bool enabled)
 {
     setValue("trayOnClose", enabled);
+}
+
+bool ConfigStore::confirmExit() const
+{
+    return config_["confirmExit"].toBool(true);
+}
+void ConfigStore::setConfirmExit(bool enabled)
+{
+    setValue("confirmExit", enabled);
 }
 
 bool ConfigStore::trayOnMinimize() const

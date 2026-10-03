@@ -80,6 +80,7 @@ private:
     QComboBox* languageCombo_;
     QCheckBox* minimizeToTrayCheck_;
     QCheckBox* closeToTrayCheck_;
+    QCheckBox* confirmExitCheck_;
     QCheckBox* startMinimizedCheck_;
     QCheckBox* autoStartCheck_;
     QCheckBox* darkModeCheck_;

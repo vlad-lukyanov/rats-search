@@ -1143,12 +1143,20 @@ void MainWindow::closeEvent(QCloseEvent* event)
         return;
     }
 
-    // Confirm exit.
-    QMessageBox::StandardButton reply = QMessageBox::question(
-        this, tr("Confirm Exit"), tr("Are you sure you want to exit Rats Search?"), QMessageBox::Yes | QMessageBox::No);
-    if (reply == QMessageBox::No) {
-        event->ignore();
-        return;
+    // Confirm exit, unless the user switched the prompt off (here via "Don't ask
+    // again", or in Settings).
+    if (!config || config->confirmExit()) {
+        QMessageBox box(QMessageBox::Question, tr("Confirm Exit"), tr("Are you sure you want to exit Rats Search?"),
+            QMessageBox::Yes | QMessageBox::No, this);
+        box.setDefaultButton(QMessageBox::Yes);
+        QCheckBox* dontAsk = new QCheckBox(tr("Don't ask again"), &box);
+        box.setCheckBox(dontAsk);
+        if (box.exec() != QMessageBox::Yes) {
+            event->ignore();
+            return;
+        }
+        if (config && dontAsk->isChecked())
+            config->setConfirmExit(false);
     }
 
     // Persist UI state; service shutdown (DB, P2P, session) is

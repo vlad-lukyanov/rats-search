@@ -169,6 +169,9 @@ QWidget* SettingsDialog::createGeneralTab()
     closeToTrayCheck_ = new QCheckBox(tr("Hide to tray on close"));
     startupLayout->addRow(closeToTrayCheck_);
 
+    confirmExitCheck_ = new QCheckBox(tr("Ask for confirmation before exiting"));
+    startupLayout->addRow(confirmExitCheck_);
+
     // When autostart is enabled, suggest starting minimized
     connect(autoStartCheck_, &QCheckBox::toggled, this, [this](bool checked) {
         if (checked && !startMinimizedCheck_->isChecked()) {
@@ -623,6 +626,7 @@ void SettingsDialog::loadSettings()
     startMinimizedCheck_->setChecked(config_->startMinimized());
     minimizeToTrayCheck_->setChecked(config_->trayOnMinimize());
     closeToTrayCheck_->setChecked(config_->trayOnClose());
+    confirmExitCheck_->setChecked(config_->confirmExit());
     checkUpdatesCheck_->setChecked(config_->checkUpdatesOnStartup());
     searchHistoryCheck_->setChecked(config_->searchHistoryEnabled());
     updateSearchHistoryButton();
@@ -700,6 +704,7 @@ void SettingsDialog::saveSettings()
     config_->setStartMinimized(startMinimizedCheck_->isChecked());
     config_->setTrayOnMinimize(minimizeToTrayCheck_->isChecked());
     config_->setTrayOnClose(closeToTrayCheck_->isChecked());
+    config_->setConfirmExit(confirmExitCheck_->isChecked());
     config_->setCheckUpdatesOnStartup(checkUpdatesCheck_->isChecked());
     config_->setSearchHistoryEnabled(searchHistoryCheck_->isChecked());
 

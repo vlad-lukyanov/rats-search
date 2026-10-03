@@ -198,6 +198,10 @@ public:
     bool trayOnClose() const;
     void setTrayOnClose(bool enabled);
 
+    // Whether quitting the GUI asks "Are you sure you want to exit?" first.
+    bool confirmExit() const;
+    void setConfirmExit(bool enabled);
+
     bool trayOnMinimize() const;
     void setTrayOnMinimize(bool enabled);
 
