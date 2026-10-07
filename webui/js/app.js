@@ -1,5 +1,64 @@
 const { createApp } = Vue;
 
+const EN_WEBUI = {
+    'activity.waiting': 'Waiting for new torrents...',
+    'context.addToFav': 'Add to Favorites',
+    'context.export': 'Export .torrent',
+    'details.copy': 'Copy',
+    'details.export': 'Export .torrent',
+    'details.favorite': 'Favorite',
+    'details.favorited': 'Favorited',
+    'details.files': 'Files',
+    'downloads.noActive': 'No active downloads',
+    'favorites.empty': 'No favorites yet. Click the star icon on a torrent to add it.',
+    'footer.dhtNodes': 'DHT Nodes',
+    'footer.files': 'Files',
+    'footer.peers': 'Peers',
+    'footer.totalSize': 'Total Size',
+    'footer.torrents': 'Torrents',
+    'search.noResults': 'No torrents found for',
+    'search.searching': 'Searching...',
+    'settings.adultFilter': 'Adult content filter',
+    'settings.autoCleanup': 'Auto cleanup old torrents',
+    'settings.closeToTray': 'Close to tray',
+    'settings.enableP2p': 'Enable P2P',
+    'settings.enableQuota': 'Enable disk space quota',
+    'settings.filters': 'Filters',
+    'settings.general': 'General',
+    'settings.indexer': 'Indexer',
+    'settings.maxSize': 'Max size (MB):',
+    'settings.minSize': 'Min size (MB):',
+    'settings.network': 'Network',
+    'settings.nodesUsage': 'DHT nodes usage:',
+    'settings.negativeRegex': 'Negative regex (reject matches)',
+    'settings.packageLimit': 'Package limit:',
+    'settings.p2pReplication': 'P2P replication (client)',
+    'settings.p2pReplicationServer': 'P2P replication server',
+    'settings.regex': 'Regex:',
+    'settings.recheckFiles': 'Recheck files on adding',
+    'settings.saveBtn': 'Save Settings',
+    'settings.sizeLimits': 'Size & File Limits',
+    'settings.spaceQuota': 'Space Quota',
+    'settings.startup': 'Startup & System',
+    'settings.storage': 'Storage',
+    'tabs.activity': 'Activity',
+    'tabs.favorites': 'Favorites',
+    'tabs.feed': 'Feed',
+    'tabs.top': 'Top',
+    'toast.addedFav': 'Added to favorites',
+    'toast.downloadStarted': 'Download started',
+    'toast.exported': 'Torrent exported',
+    'toast.imported': 'imported',
+    'toast.settingsSaved': 'Settings saved',
+    'toast.voteBad': 'Voted bad',
+    'toast.voteGood': 'Voted good',
+};
+
+const I18N = { en: { ...EN_WEBUI } };
+if (window.__PRELOADED_I18N && window.__PRELOADED_LANG) {
+    I18N[window.__PRELOADED_LANG] = { ...EN_WEBUI, ...window.__PRELOADED_I18N };
+}
+
 const app = createApp({
     data() {
         return {
@@ -45,14 +104,16 @@ const app = createApp({
         this.darkMode = savedTheme ? savedTheme === 'dark' : true;
         this.applyTheme();
 
+        await this.setLocale(this.locale);
+
         await this.loadStats();
         await this.loadP2PStatus();
         await this.loadTopTorrents();
         await this.loadFeed();
         await this.loadFavorites();
         await this.loadConfig();
-        if (this.config && this.config.language) {
-            this.setLocale(this.config.language);
+        if (this.config && this.config.language && this.config.language !== this.locale) {
+            await this.setLocale(this.config.language);
         }
 
         setInterval(() => {
@@ -98,7 +159,7 @@ const app = createApp({
             return this.sortSource === 'favorites' ? this.applySorting(this.favorites) : this.favorites;
         },
         currentDict() {
-            return I18N[this.locale] || {};
+            return I18N[this.locale] || I18N['en'] || {};
         }
     },
 
@@ -118,9 +179,30 @@ const app = createApp({
             document.body.classList.toggle('light-theme', !this.darkMode);
         },
 
-        setLocale(lang) {
+        async setLocale(lang) {
             this.locale = lang;
             localStorage.setItem('locale', lang);
+            if (lang === 'en') {
+                I18N['en'] = { ...EN_WEBUI };
+                return;
+            }
+            try {
+                const resp = await fetch(`/api/translations/${lang}`);
+                if (resp.ok) {
+                    const xml = await resp.text();
+                    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+                    const dict = {};
+                    for (const msg of doc.querySelectorAll('context message')) {
+                        const src = msg.querySelector('source')?.textContent;
+                        const trans = msg.querySelector('translation');
+                        if (src && trans && !trans.getAttribute('type')?.includes('unfinished'))
+                            dict[src] = trans.textContent;
+                    }
+                    I18N[lang] = { ...EN_WEBUI, ...dict };
+                }
+            } catch (e) {
+                I18N[lang] = { ...EN_WEBUI };
+            }
         },
 
         switchTab(tab) {
@@ -313,7 +395,7 @@ const app = createApp({
         },
 
         async checkTorrents() {
-            this.cleanupStatus = this.t('settings.checkingTorrents') || 'Checking...';
+            this.cleanupStatus = this.t('Checking torrents against filters...') || 'Checking...';
             try {
                 const resp = await fetch('/api/torrent.cleanup?dryRun=true');
                 const data = await resp.json();
@@ -330,7 +412,7 @@ const app = createApp({
         },
 
         async cleanTorrents() {
-            if (!confirm(this.t('settings.confirmClean') || 'Remove torrents that don\'t match the current filters?')) return;
+            if (!confirm(this.t("Remove torrents that don't match the current filters") || 'Remove torrents that don\'t match the current filters?')) return;
             this.cleanupStatus = this.t('settings.cleaningTorrents') || 'Cleaning...';
             try {
                 const resp = await fetch('/api/torrent.cleanup?dryRun=false');
@@ -581,7 +663,7 @@ const app = createApp({
             const link = this.getMagnetLink(torrent);
             try {
                 await navigator.clipboard.writeText(link);
-                this.showToast(this.t('toast.magnetCopied'), 'success');
+                this.showToast(this.t('Magnet link copied to clipboard'), 'success');
             } catch (err) {
                 const textArea = document.createElement('textarea');
                 textArea.value = link;
@@ -589,7 +671,7 @@ const app = createApp({
                 textArea.select();
                 document.execCommand('copy');
                 document.body.removeChild(textArea);
-                this.showToast(this.t('toast.magnetCopied'), 'success');
+                this.showToast(this.t('Magnet link copied to clipboard'), 'success');
             }
         },
 
@@ -618,7 +700,7 @@ const app = createApp({
         contextCopyHash() {
             if (this.contextMenu.torrent) {
                 navigator.clipboard.writeText(this.contextMenu.torrent.hash).then(() => {
-                this.showToast(this.t('toast.hashCopied'), 'success');
+                this.showToast(this.t('Hash copied to clipboard'), 'success');
                 });
             }
             this.hideContextMenu();

@@ -332,6 +332,14 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
         return;
     }
 
+    // Translations endpoint: /api/translations/<lang>
+    if (req.path.startsWith("/api/translations/")) {
+        const QString lang = req.path.mid(19);
+        socket->write(handleTranslations(lang));
+        socket->disconnectFromHost();
+        return;
+    }
+
     // Static file serving for webui
     if (req.path == "/" || req.path.startsWith("/css/") || req.path.startsWith("/js/") ||
         req.path.startsWith("/images/") || req.path.endsWith(".html") || req.path.endsWith(".css") ||
@@ -859,6 +867,20 @@ QByteArray ApiServer::handleStaticFile(const QString& path) const
         contentType = "image/x-icon";
 
     return buildHttpResponse(200, "OK", content, contentType);
+}
+
+QByteArray ApiServer::handleTranslations(const QString& lang) const
+{
+    static const QSet<QString> kValidLangs = {
+        QStringLiteral("ru"), QStringLiteral("de"), QStringLiteral("es"),
+        QStringLiteral("fr"), QStringLiteral("ja"), QStringLiteral("zh"),
+        QStringLiteral("ko")
+    };
+    const QString actualLang = kValidLangs.contains(lang) ? lang : QStringLiteral("ru");
+    QFile file(QStringLiteral(":/ts/%1").arg(actualLang));
+    if (!file.open(QIODevice::ReadOnly))
+        return buildHttpResponse(404, "Not Found", QByteArray());
+    return buildHttpResponse(200, "OK", file.readAll(), QStringLiteral("application/xml"));
 }
 
 } // namespace rats::rest

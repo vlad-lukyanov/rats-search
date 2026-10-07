@@ -72,6 +72,9 @@ private:
     QByteArray handleReadyz() const;
     QByteArray handleMetrics() const;
 
+    // Translations endpoint
+    QByteArray handleTranslations(const QString& lang) const;
+
 signals:
     void started();
     void stopped();
