@@ -1457,6 +1457,11 @@ Do you want to install the update now?</source>
         <source>I Accept</source>
         <translation>我接受</translation>
     </message>
+    <message>
+        <location filename="src/ui/mainwindow.cpp" line="1181"/>
+        <source>Don't ask again</source>
+        <translation>不再询问</translation>
+    </message>
 </context>
 <context>
     <name>QObject</name>
@@ -2002,6 +2007,36 @@ Do you want to install the update now?</source>
         <location filename="../src/ui/settingsdialog.cpp" line="803"/>
         <source>Select Data Directory</source>
         <translation>选择数据目录</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="192"/>
+        <source>Ask for confirmation before exiting</source>
+        <translation>退出前询问确认</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="156"/>
+        <source>Default</source>
+        <translation>默认</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="162"/>
+        <source>Font used throughout the interface</source>
+        <translation>整个界面使用的字体</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="163"/>
+        <source>Font:</source>
+        <translation>字体:</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="169"/>
+        <source>Size of the interface text relative to the default</source>
+        <translation>相对于默认值的界面文字大小</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="170"/>
+        <source>Font size:</source>
+        <translation>字体大小:</translation>
     </message>
 </context>
 <context>

@@ -1458,6 +1458,11 @@ Voulez-vous installer la mise à jour maintenant ?</translation>
         <source>I Accept</source>
         <translation>J'accepte</translation>
     </message>
+    <message>
+        <location filename="src/ui/mainwindow.cpp" line="1181"/>
+        <source>Don't ask again</source>
+        <translation>Ne plus demander</translation>
+    </message>
 </context>
 <context>
     <name>QObject</name>
@@ -2003,6 +2008,36 @@ Voulez-vous installer la mise à jour maintenant ?</translation>
         <location filename="../src/ui/settingsdialog.cpp" line="803"/>
         <source>Select Data Directory</source>
         <translation>Choisissez le répertoire de données</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="192"/>
+        <source>Ask for confirmation before exiting</source>
+        <translation>Demander une confirmation avant de quitter</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="156"/>
+        <source>Default</source>
+        <translation>Par défaut</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="162"/>
+        <source>Font used throughout the interface</source>
+        <translation>Police utilisée dans toute l'interface</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="163"/>
+        <source>Font:</source>
+        <translation>Police :</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="169"/>
+        <source>Size of the interface text relative to the default</source>
+        <translation>Taille du texte de l'interface par rapport au défaut</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="170"/>
+        <source>Font size:</source>
+        <translation>Taille de police :</translation>
     </message>
 </context>
 <context>

@@ -1458,6 +1458,11 @@ Möchten Sie das Update jetzt installieren?</translation>
         <source>I Accept</source>
         <translation>Ich stimme zu</translation>
     </message>
+    <message>
+        <location filename="src/ui/mainwindow.cpp" line="1181"/>
+        <source>Don't ask again</source>
+        <translation>Nicht mehr fragen</translation>
+    </message>
 </context>
 <context>
     <name>QObject</name>
@@ -2003,6 +2008,36 @@ Möchten Sie das Update jetzt installieren?</translation>
         <location filename="../src/ui/settingsdialog.cpp" line="803"/>
         <source>Select Data Directory</source>
         <translation>Datenverzeichnis auswählen</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="192"/>
+        <source>Ask for confirmation before exiting</source>
+        <translation>Nachfragen vor dem Beenden</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="156"/>
+        <source>Default</source>
+        <translation>Standard</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="162"/>
+        <source>Font used throughout the interface</source>
+        <translation>Im gesamten Interface verwendete Schrift</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="163"/>
+        <source>Font:</source>
+        <translation>Schrift:</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="169"/>
+        <source>Size of the interface text relative to the default</source>
+        <translation>Größe des Interfacetexts relativ zum Standard</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="170"/>
+        <source>Font size:</source>
+        <translation>Schriftgröße:</translation>
     </message>
 </context>
 <context>

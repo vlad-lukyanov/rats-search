@@ -1458,6 +1458,11 @@ La aplicación se cerrará y se reiniciará automáticamente.
         <source>I Accept</source>
         <translation>Acepto</translation>
     </message>
+    <message>
+        <location filename="src/ui/mainwindow.cpp" line="1181"/>
+        <source>Don't ask again</source>
+        <translation>No volver a preguntar</translation>
+    </message>
 </context>
 <context>
     <name>QObject</name>
@@ -2003,6 +2008,36 @@ La aplicación se cerrará y se reiniciará automáticamente.
         <location filename="../src/ui/settingsdialog.cpp" line="803"/>
         <source>Select Data Directory</source>
         <translation>Seleccione el directorio de datos</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="192"/>
+        <source>Ask for confirmation before exiting</source>
+        <translation>Pedir confirmación al salir</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="156"/>
+        <source>Default</source>
+        <translation>Predeterminado</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="162"/>
+        <source>Font used throughout the interface</source>
+        <translation>Fuente utilizada en toda la interfaz</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="163"/>
+        <source>Font:</source>
+        <translation>Fuente:</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="169"/>
+        <source>Size of the interface text relative to the default</source>
+        <translation>Tamaño del texto de la interfaz respecto al predeterminado</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="170"/>
+        <source>Font size:</source>
+        <translation>Tamaño de fuente:</translation>
     </message>
 </context>
 <context>

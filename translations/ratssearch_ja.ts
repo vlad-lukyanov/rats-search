@@ -1457,6 +1457,11 @@ Do you want to install the update now?</source>
         <source>I Accept</source>
         <translation>同意する</translation>
     </message>
+    <message>
+        <location filename="src/ui/mainwindow.cpp" line="1181"/>
+        <source>Don't ask again</source>
+        <translation>今後確認しない</translation>
+    </message>
 </context>
 <context>
     <name>QObject</name>
@@ -2002,6 +2007,36 @@ Do you want to install the update now?</source>
         <location filename="../src/ui/settingsdialog.cpp" line="803"/>
         <source>Select Data Directory</source>
         <translation>データディレクトリの選択</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="192"/>
+        <source>Ask for confirmation before exiting</source>
+        <translation>終了前に確認を求める</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="156"/>
+        <source>Default</source>
+        <translation>デフォルト</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="162"/>
+        <source>Font used throughout the interface</source>
+        <translation>インターフェース全体で使用するフォント</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="163"/>
+        <source>Font:</source>
+        <translation>フォント:</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="169"/>
+        <source>Size of the interface text relative to the default</source>
+        <translation>既定のサイズに対するインターフェース テキストのサイズ</translation>
+    </message>
+    <message>
+        <location filename="src/ui/settingsdialog.cpp" line="170"/>
+        <source>Font size:</source>
+        <translation>フォント サイズ:</translation>
     </message>
 </context>
 <context>
