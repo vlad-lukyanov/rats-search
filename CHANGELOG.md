@@ -2,7 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
-## [unreleased]
+## [2.3.5](https://github.com/DEgITx/rats-search/compare/v2.3.4...v2.3.5) (2026-10-07)
+
+
+### 🐛 Bug Fixes
+
+
+- **ci:** Re-sign macOS ARM bundle after adding Manticore binaries([4c32c46](https://github.com/DEgITx/rats-search/commit/4c32c469faae54c0e001c080afd78827baaa8af2)) by @LoneStarMac
+- **ci:** Bump actions/upload-artifact from v6 to v7([377b45e](https://github.com/DEgITx/rats-search/commit/377b45e141bed8b684613fb4e0c7792f9d920661)) by @DEgITx
+
+
+### 📚 Documentation
+
+
+- Update CHANGELOG.md for v2.3.4([65ceb68](https://github.com/DEgITx/rats-search/commit/65ceb68f87f408c47381e83cd25c09222e111cc4)) by @github-actions[bot]
+- Update CHANGELOG.md for v2.3.3-beta([f61477d](https://github.com/DEgITx/rats-search/commit/f61477dfecbf990b818abe08304e0214b78ba377)) by @github-actions[bot]
+- Update CHANGELOG.md for v2.3.3([fe7048b](https://github.com/DEgITx/rats-search/commit/fe7048bcc7a4223fb981ce63ba054936417f4b8a)) by @github-actions[bot]
+- Update CHANGELOG.md for v2.3.4([2e3c2c3](https://github.com/DEgITx/rats-search/commit/2e3c2c3db67031f41f98292748c428699135a1c2)) by @github-actions[bot]
+- Update CHANGELOG.md for v2.3.5([032d297](https://github.com/DEgITx/rats-search/commit/032d297a62e895dd253d6df9095a6f8068f49f91)) by @github-actions[bot]
 
 
 ### 📦 Miscellaneous
@@ -11,22 +28,19 @@ All notable changes to this project will be documented in this file.
 - **i18n:** Translate new v2.3.3-v2.3.5 UI strings([8a41a79](https://github.com/DEgITx/rats-search/commit/8a41a7905cd534dc4eab86c1b03a207e70b33b11)) by @vlad-lukyanov
 
 
+### 🔧 Refactor
 
 
-### 👥 Contributors
-
-
-
-- [@vlad-lukyanov](https://github.com/vlad-lukyanov) — 1 commit
-
-
-## [2.3.5](https://github.com/DEgITx/rats-search/compare/v2.3.4...v2.3.5) (2026-10-07)
+- **net:** Share scrape scheduling with interactive priority([2152591](https://github.com/DEgITx/rats-search/commit/2152591a0065030b726c1bf493f8f70183f58791)) by @DEgITx
 
 
 ### 🚀 Features
 
 
 - **ui:** Add configurable interface font family and size([30d1ac0](https://github.com/DEgITx/rats-search/commit/30d1ac047ad19307b955a5d20256f5d521be07ba)) by @DEgITx
+- **ui:** Allow disabling the exit confirmation prompt([c2c86cd](https://github.com/DEgITx/rats-search/commit/c2c86cdf0b8405374d98e843552bdbef7a99493c)) by @DEgITx
+- **ui:** Remember splitter sizes, column widths and search filters([b2ee0c9](https://github.com/DEgITx/rats-search/commit/b2ee0c943f62ef20825e43ba0aa23e9c0a6ef37d)) by @DEgITx
+- **ui:** Add configurable interface font family and size([8415a20](https://github.com/DEgITx/rats-search/commit/8415a208025d3827f2f380f3bfe530557a10eaba)) by @DEgITx
 
 
 
@@ -35,7 +49,16 @@ All notable changes to this project will be documented in this file.
 
 
 
-- [@DEgITx](https://github.com/DEgITx) — 1 commit
+- [@DEgITx](https://github.com/DEgITx) — 6 commits
+
+
+- [@LoneStarMac](https://github.com/LoneStarMac) — 1 commit
+
+
+- [@github-actions[bot]](https://github.com/github-actions[bot]) — 5 commits
+
+
+- [@vlad-lukyanov](https://github.com/vlad-lukyanov) — 1 commit
 
 
 ## [2.3.4](https://github.com/DEgITx/rats-search/compare/v2.3.3...v2.3.4) (2026-10-07)
