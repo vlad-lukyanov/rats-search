@@ -2,6 +2,109 @@
 
 All notable changes to this project will be documented in this file.
 
+## [unreleased]
+
+
+### 📦 Miscellaneous
+
+
+- **i18n:** Translate new v2.3.3-v2.3.5 UI strings([8a41a79](https://github.com/DEgITx/rats-search/commit/8a41a7905cd534dc4eab86c1b03a207e70b33b11)) by @vlad-lukyanov
+
+
+
+
+### 👥 Contributors
+
+
+
+- [@vlad-lukyanov](https://github.com/vlad-lukyanov) — 1 commit
+
+
+## [2.3.5](https://github.com/DEgITx/rats-search/compare/v2.3.4...v2.3.5) (2026-10-07)
+
+
+### 🚀 Features
+
+
+- **ui:** Add configurable interface font family and size([30d1ac0](https://github.com/DEgITx/rats-search/commit/30d1ac047ad19307b955a5d20256f5d521be07ba)) by @DEgITx
+
+
+
+
+### 👥 Contributors
+
+
+
+- [@DEgITx](https://github.com/DEgITx) — 1 commit
+
+
+## [2.3.4](https://github.com/DEgITx/rats-search/compare/v2.3.3...v2.3.4) (2026-10-07)
+
+
+### 🔧 Refactor
+
+
+- **net:** Share scrape scheduling with interactive priority([01590ee](https://github.com/DEgITx/rats-search/commit/01590ee28b09903e0de6cfd078b1951d4f656fea)) by @DEgITx
+
+
+### 🚀 Features
+
+
+- **ui:** Allow disabling the exit confirmation prompt([7ea5199](https://github.com/DEgITx/rats-search/commit/7ea5199a8891cf75f2193b14e3d0279b0d150510)) by @DEgITx
+- **ui:** Remember splitter sizes, column widths and search filters([f00903c](https://github.com/DEgITx/rats-search/commit/f00903c916f54258e4ee982fdcaa476cc57cd9e0)) by @DEgITx
+
+
+
+
+### 👥 Contributors
+
+
+
+- [@DEgITx](https://github.com/DEgITx) — 3 commits
+
+
+## [2.3.3](https://github.com/DEgITx/rats-search/compare/v2.3.2...v2.3.3) (2026-10-07)
+
+
+### 🐛 Bug Fixes
+
+
+- Show correct torrent size in Activity tab and details panel([a632ca5](https://github.com/DEgITx/rats-search/commit/a632ca5abf070995e57f83a4e4bd477035234be0)) by @vlad-lukyanov
+- Re-classify torrent contentType after file list backfill([430b40d](https://github.com/DEgITx/rats-search/commit/430b40dfc3ef8c8e9e8f061a0c76accf2da3980e)) by @vlad-lukyanov
+- **ci:** Re-sign macOS ARM bundle after adding Manticore binaries([331a973](https://github.com/DEgITx/rats-search/commit/331a9738879bcefe876b863a82d7a4049476f2e8)) by @LoneStarMac
+- **ci:** Bump actions/upload-artifact from v6 to v7([4bce63f](https://github.com/DEgITx/rats-search/commit/4bce63fdf9ee03745b23eb40bb9408902e2d81f7)) by @DEgITx
+
+
+### 📚 Documentation
+
+
+- Update CHANGELOG.md for v2.3.2([3ed0e1f](https://github.com/DEgITx/rats-search/commit/3ed0e1f8d9a3178e44bb042df1217fc679c43e82)) by @github-actions[bot]
+
+
+### 🚀 Features
+
+
+- **webui:** Use .ts translation files as the single source of truth([8a3627d](https://github.com/DEgITx/rats-search/commit/8a3627d1bc03b3cc0cc71095270a07bf45f24100)) by @vlad-lukyanov
+
+
+
+
+### 👥 Contributors
+
+
+
+- [@DEgITx](https://github.com/DEgITx) — 1 commit
+
+
+- [@LoneStarMac](https://github.com/LoneStarMac) — 1 commit
+
+
+- [@github-actions[bot]](https://github.com/github-actions[bot]) — 1 commit
+
+
+- [@vlad-lukyanov](https://github.com/vlad-lukyanov) — 3 commits
+
+
 ## [2.3.2](https://github.com/DEgITx/rats-search/compare/v2.3.1...v2.3.2) (2026-09-19)
 
 
